@@ -42,6 +42,11 @@
 #include <linux/vgaarb.h>
 #include <linux/export.h>
 
+#if defined(CONFIG_XEN_VGT_I915) || defined(CONFIG_XEN_VGT_I915_MODULE)
+#include <xen/vgt.h>
+#define DRM_VGT_SUPPORT 1
+#endif
+
 /* Access macro for slots in vblank timestamp ringbuffer. */
 #define vblanktimestamp(dev, crtc, count) \
 	((dev)->vblank[crtc].time[(count) % DRM_VBLANKTIME_RBSIZE])
@@ -174,6 +179,11 @@ static void vblank_disable_fn(unsigned long arg)
 	if (!dev->vblank_disable_allowed)
 		return;
 
+#ifdef DRM_VGT_SUPPORT
+	if (vgt_check_busy(VGT_DELAY_VBLANK_DISABLE_TIMER))
+		return;
+#endif
+
 	for (i = 0; i < dev->num_crtcs; i++) {
 		spin_lock_irqsave(&dev->vbl_lock, irqflags);
 		if (atomic_read(&dev->vblank[i].refcount) == 0 &&
@@ -207,6 +217,10 @@ int drm_vblank_init(struct drm_device *dev, int num_crtcs)
 
 	setup_timer(&dev->vblank_disable_timer, vblank_disable_fn,
 		    (unsigned long)dev);
+#ifdef DRM_VGT_SUPPORT
+	vgt_set_delayed_event_data(VGT_DELAY_VBLANK_DISABLE_TIMER,
+			&dev->vblank_disable_timer);
+#endif
 	spin_lock_init(&dev->vbl_lock);
 	spin_lock_init(&dev->vblank_time_lock);
 
@@ -353,6 +367,7 @@ int drm_irq_uninstall(struct drm_device *dev)
 	unsigned long irqflags;
 	bool irq_enabled;
 	int i;
+	void vgt_uninstall_irq(struct pci_dev *pdev);
 
 	if (!drm_core_check_feature(dev, DRIVER_HAVE_IRQ))
 		return -EINVAL;
@@ -388,6 +403,9 @@ int drm_irq_uninstall(struct drm_device *dev)
 		dev->driver->irq_uninstall(dev);
 
 	free_irq(drm_dev_to_irq(dev), dev);
+
+	/* TODO: add a dev->driver->post_irq_uninstall? */
+	vgt_uninstall_irq(dev->pdev);
 
 	return 0;
 }
