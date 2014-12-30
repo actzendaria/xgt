@@ -70,6 +70,229 @@ typedef gen8_gtt_pte_t gen8_ppgtt_pde_t;
 #define PPAT_CACHED_INDEX		_PAGE_PAT /* WB LLCeLLC */
 #define PPAT_DISPLAY_ELLC_INDEX		_PAGE_PCD /* WT eLLC */
 
+#ifdef DRM_I915_VGT_SUPPORT
+struct _balloon_info_ {
+	/*
+	 * There are up to 2 regions per aperture/gmadr that 
+	 * might be ballooned, per assigned aperture/gmadr.
+	 * Here, ballooned gmadr doesn't include the
+	 * might-be overlap aperture areas, and index 0/1 is for 
+	 * aperture, 2/3 for gmadr.
+	 */
+	struct drm_mm_node space[4];
+} bl_info;
+
+static int i915_balloon_space(
+			struct drm_mm *mm,
+			struct drm_mm_node *node,
+			unsigned long start,
+			unsigned long end)
+{
+	unsigned long size = end - start;
+
+	if (start == end)
+		return -EEXIST;
+
+	printk("i915_balloon_space: range [ 0x%lx - 0x%lx ] %lu KB.\n",
+			start, end, size / 1024);
+
+	return drm_mm_insert_node_in_range_generic(mm, node, size, 0, 0, start, end, 0);
+}
+
+static void i915_deballoon(drm_i915_private_t *dev_priv)
+{
+	int i;
+
+	printk("i915 deballoon.\n");
+
+	for (i = 0; i < 4; i++) {
+		if (bl_info.space[i].allocated)
+			drm_mm_remove_node(&bl_info.space[i]);
+	}
+
+	memset (&bl_info, 0, sizeof(bl_info));
+}
+
+/*
+ *  return vgt version if it is, otherwise 0.
+ */
+void i915_check_vgt(drm_i915_private_t *dev_priv)
+{
+	uint64_t	magic;
+	uint32_t	version;
+
+	magic = I915_READ64(vgt_info_off(magic));
+	if (magic != VGT_MAGIC) {
+		printk(KERN_ERR "Wrong vgt_if magic number!\n");
+		return;
+	}
+	version = (I915_READ16(vgt_info_off(version_major)) << 16) |
+			I915_READ16(vgt_info_off(version_minor));
+
+	if (version == VGT_IF_VERSION)
+		dev_priv->in_xen_vgt = true;
+}
+
+static int i915_balloon(drm_i915_private_t *dev_priv)
+{
+	unsigned long low_gm_base, low_gm_size, low_gm_end;
+	unsigned long high_gm_base, high_gm_size, high_gm_end;
+	int fail = 0;
+
+	bool enable_ppgtt = intel_enable_ppgtt(dev_priv->dev);
+	bool ppgtt_pdes_allocated = false;
+
+	/* At the end of low_gm and high_gm there is a guard page,
+	 * respectively.
+	 *
+	 * And, if i915 wants to enable PPGTT, we also need to reserve
+	 * I915_PPGTT_PD_ENTRIES pages at the end of high_gm (in this
+	 * case, the guard page is the page that is just before the
+	 * I915_PPGTT_PD_ENTRIES pages).
+	 * If the size of high_gm is not big enough, we try to reserve
+	 * the I915_PPGTT_PD_ENTRIES pages at the end of low_gm.
+	 */
+
+	unsigned long guard_pg_sz = PAGE_SIZE;
+	unsigned long rsvd_pg_sz_for_ppgtt = GEN6_PPGTT_PD_ENTRIES * PAGE_SIZE;
+
+	printk("i915 ballooning.\n");
+
+	low_gm_base = I915_READ(vgt_info_off(avail_rs.low_gmadr.my_base));
+	low_gm_size = I915_READ(vgt_info_off(avail_rs.low_gmadr.my_size));
+	high_gm_base = I915_READ(vgt_info_off(avail_rs.high_gmadr.my_base));
+	high_gm_size = I915_READ(vgt_info_off(avail_rs.high_gmadr.my_size));
+
+	low_gm_end = low_gm_base + low_gm_size;
+	high_gm_end = high_gm_base + high_gm_size;
+
+	printk("Ballooning configuration:\n");
+	printk("Low GM: base 0x%lx size %ldKB\n", low_gm_base, low_gm_size / 1024);
+	printk("High GM: base 0x%lx size %ldKB\n", high_gm_base, high_gm_size / 1024);
+
+	if (low_gm_base < dev_priv->gtt.base.start
+			|| low_gm_end > dev_priv->gtt.mappable_end
+			|| high_gm_base < dev_priv->gtt.base.start
+			|| high_gm_end > dev_priv->gtt.base.start + dev_priv->gtt.base.total) {
+		printk(KERN_ERR "Invalid ballooning configuration!\n");
+		return -EINVAL;
+	}
+
+	dev_priv->mm.vgt_low_gm_base = low_gm_base;
+	dev_priv->mm.vgt_low_gm_size = low_gm_size;
+	dev_priv->mm.vgt_high_gm_base = high_gm_base;
+	dev_priv->mm.vgt_high_gm_size = high_gm_size;
+
+	memset (&bl_info, 0, sizeof(bl_info));
+
+	/* High GM ballooning */
+	if (high_gm_base > dev_priv->gtt.mappable_end) {
+	        fail = i915_balloon_space(
+			&dev_priv->gtt.base.mm,
+			&bl_info.space[2],
+			dev_priv->gtt.mappable_end, high_gm_base);
+
+		if (fail)
+			goto err;
+	}
+
+	if (high_gm_end <= dev_priv->gtt.base.start + dev_priv->gtt.base.total) {
+		if (enable_ppgtt && (high_gm_size >= rsvd_pg_sz_for_ppgtt)) {
+			/*
+			 * Allocated PPGTT PDES from High GM.
+			 */
+			high_gm_size -= rsvd_pg_sz_for_ppgtt;
+			ppgtt_pdes_allocated = true;
+			dev_priv->mm.first_ppgtt_pde_in_gtt =
+				(high_gm_end >> PAGE_SHIFT) -
+				GEN6_PPGTT_PD_ENTRIES;
+		}
+
+		if (high_gm_size > guard_pg_sz) {
+			high_gm_size -= guard_pg_sz;
+		} else {
+			/* high_gm_size is in MB and rsvd_pg_sz_for_ppgtt is
+			 * actually 2M, so gmadr_size must be 0 here.
+			 */
+			BUG_ON(high_gm_size != 0);
+		}
+
+	        fail = i915_balloon_space(
+			&dev_priv->gtt.base.mm,
+			&bl_info.space[3],
+			high_gm_base + high_gm_size,
+			dev_priv->gtt.base.start + dev_priv->gtt.base.total);
+
+		if (fail)
+			goto err;
+	}
+
+	/* Low GM ballooning */
+	if (low_gm_base > dev_priv->gtt.base.start) {
+	        fail = i915_balloon_space(
+			&dev_priv->gtt.base.mm,
+			&bl_info.space[0],
+			dev_priv->gtt.base.start, low_gm_base);
+
+		if (fail)
+			goto err;
+	}
+
+	if (low_gm_end <= dev_priv->gtt.mappable_end) {
+		if (enable_ppgtt && !ppgtt_pdes_allocated &&
+				(low_gm_size >= rsvd_pg_sz_for_ppgtt)) {
+			/*
+			 * Allocate PPGTT PDES from low GM.
+			 */
+			low_gm_size -= rsvd_pg_sz_for_ppgtt;
+			ppgtt_pdes_allocated = true;
+			dev_priv->mm.first_ppgtt_pde_in_gtt =
+				(low_gm_end >> PAGE_SHIFT) -
+				GEN6_PPGTT_PD_ENTRIES;
+		}
+
+		if (low_gm_size > guard_pg_sz) {
+			low_gm_size -= guard_pg_sz;
+		} else {
+			/* apert_size is in MB and rsvd_pg_sz_for_ppgtt is
+			 * actually 2M, so apert_size can only be 0 here.
+			 */
+			BUG_ON(low_gm_size != 0);
+		}
+
+	        fail = i915_balloon_space(
+			&dev_priv->gtt.base.mm,
+			&bl_info.space[1],
+			low_gm_base + low_gm_size,
+			dev_priv->gtt.mappable_end);
+
+		if (fail)
+			goto err;
+	}
+
+	if (enable_ppgtt) {
+		if (!ppgtt_pdes_allocated) {
+			printk("vGT: can not get space for PPGTT table!\n");
+			goto err;
+		}
+
+		/* PPGTT PD offset should be 16-byte aligned.
+		 * Since low_gm_size and high_gm_size are in MB,  we're sure
+		 * dev_priv->mm.first_ppgtt_pde_in_gtt is properly aligned.
+		 */
+		BUG_ON(dev_priv->mm.first_ppgtt_pde_in_gtt & (16-1));
+	}
+
+	printk("balloon successfully\n");
+	return 0;
+
+err:
+	printk(KERN_ERR "balloon fail!\n");
+	i915_deballoon(dev_priv);
+	return -ENOMEM;
+}
+#endif
+
 static inline gen8_gtt_pte_t gen8_pte_encode(dma_addr_t addr,
 					     enum i915_cache_level level,
 					     bool valid)
@@ -588,9 +811,8 @@ static void gen6_ppgtt_insert_entries(struct i915_address_space *vm,
 		if (pt_vaddr == NULL)
 			pt_vaddr = kmap_atomic(ppgtt->pt_pages[act_pt]);
 
-		pt_vaddr[act_pte] =
-			vm->pte_encode(sg_page_iter_dma_address(&sg_iter),
-				       cache_level, true);
+		pt_vaddr[act_pte] = vm->pte_encode(sg_page_iter_dma_address(&sg_iter),
+				cache_level, true);
 		if (++act_pte == I915_PPGTT_PT_ENTRIES) {
 			kunmap_atomic(pt_vaddr);
 			pt_vaddr = NULL;
@@ -632,10 +854,8 @@ static int gen6_ppgtt_init(struct i915_hw_ppgtt *ppgtt)
 	int i;
 	int ret = -ENOMEM;
 
-	/* ppgtt PDEs reside in the global gtt pagetable, which has 512*1024
-	 * entries. For aliasing ppgtt support we just steal them at the end for
-	 * now. */
-	first_pd_entry_in_global_pt = gtt_total_entries(dev_priv->gtt);
+	first_pd_entry_in_global_pt = dev_priv->mm.first_ppgtt_pde_in_gtt;
+	printk("vGT: PPGTT PDEs begins @ 0x%x\n", first_pd_entry_in_global_pt);
 
 	ppgtt->base.pte_encode = dev_priv->gtt.base.pte_encode;
 	ppgtt->num_pd_entries = GEN6_PPGTT_PD_ENTRIES;
@@ -1099,7 +1319,7 @@ static void i915_gtt_color_adjust(struct drm_mm_node *node,
 	}
 }
 
-void i915_gem_setup_global_gtt(struct drm_device *dev,
+int i915_gem_setup_global_gtt(struct drm_device *dev,
 			       unsigned long start,
 			       unsigned long mappable_end,
 			       unsigned long end)
@@ -1118,13 +1338,29 @@ void i915_gem_setup_global_gtt(struct drm_device *dev,
 	struct drm_mm_node *entry;
 	struct drm_i915_gem_object *obj;
 	unsigned long hole_start, hole_end;
+	int rc = 0;
 
 	BUG_ON(mappable_end > end);
 
-	/* Subtract the guard page ... */
-	drm_mm_init(&ggtt_vm->mm, start, end - start - PAGE_SIZE);
+	printk("Eddie: mappable_end %lx\n", mappable_end);
+      
+       if ( mappable_end > end )
+               mappable_end = end;
+
+	drm_mm_init(&ggtt_vm->mm, start, end - start);
 	if (!HAS_LLC(dev))
 		dev_priv->gtt.base.mm.color_adjust = i915_gtt_color_adjust;
+
+	dev_priv->gtt.base.start = start;
+	dev_priv->gtt.base.total = end - start;
+
+#ifdef DRM_I915_VGT_SUPPORT
+	/*
+	 * Do ballooning before touching GEM gtt space.
+	 */
+	if (dev_priv->in_xen_vgt)
+		rc = i915_balloon(dev_priv);
+#endif
 
 	/* Mark any preallocated objects as occupied */
 	list_for_each_entry(obj, &dev_priv->mm.bound_list, global_list) {
@@ -1140,9 +1376,6 @@ void i915_gem_setup_global_gtt(struct drm_device *dev,
 		obj->has_global_gtt_mapping = 1;
 	}
 
-	dev_priv->gtt.base.start = start;
-	dev_priv->gtt.base.total = end - start;
-
 	/* Clear any non-preallocated blocks */
 	drm_mm_for_each_hole(entry, &ggtt_vm->mm, hole_start, hole_end) {
 		const unsigned long count = (hole_end - hole_start) / PAGE_SIZE;
@@ -1153,11 +1386,18 @@ void i915_gem_setup_global_gtt(struct drm_device *dev,
 
 	/* And finally clear the reserved guard page */
 	ggtt_vm->clear_range(ggtt_vm, end / PAGE_SIZE - 1, 1, true);
+
+	return rc;
 }
 
-static bool
+bool
 intel_enable_ppgtt(struct drm_device *dev)
 {
+	/* Disable ppgtt on SNB since it isn't supported by vgt on SNB */
+	drm_i915_private_t *dev_priv = dev->dev_private;
+	if (INTEL_INFO(dev)->gen == 6 && dev_priv->in_xen_vgt)
+		return false;
+
 	if (i915_enable_ppgtt >= 0)
 		return i915_enable_ppgtt;
 
@@ -1166,6 +1406,9 @@ intel_enable_ppgtt(struct drm_device *dev)
 	if (INTEL_INFO(dev)->gen == 6 && intel_iommu_gfx_mapped)
 		return false;
 #endif
+
+	if (!HAS_ALIASING_PPGTT(dev))
+		return false;
 
 	return true;
 }
@@ -1178,13 +1421,31 @@ void i915_gem_init_global_gtt(struct drm_device *dev)
 	gtt_size = dev_priv->gtt.base.total;
 	mappable_size = dev_priv->gtt.mappable_end;
 
-	if (intel_enable_ppgtt(dev) && HAS_ALIASING_PPGTT(dev)) {
+	/* Substract the guard page ... */
+	/*
+	 * VGT itself will handle the guard page in i915_balloon().
+	 * The original code of i915 here missed the line below,
+	 * just left a comment in i915_gem_setup_global_gtt(),
+	 * so that should be a typo.
+	 */
+	if (!dev_priv->in_xen_vgt)
+		gtt_size -= PAGE_SIZE;
+
+	if (intel_enable_ppgtt(dev)) {
 		int ret;
 
-		if (INTEL_INFO(dev)->gen <= 7) {
-			/* PPGTT pdes are stolen from global gtt ptes, so shrink the
-			 * aperture accordingly when using aliasing ppgtt. */
-			gtt_size -= GEN6_PPGTT_PD_ENTRIES * PAGE_SIZE;
+		if (!dev_priv->in_xen_vgt) {
+			/*
+			 * VGT will handle this in i915_balloon().
+			 */
+			if (INTEL_INFO(dev)->gen <= 7) {
+				/* PPGTT pdes are stolen from global gtt ptes, so shrink the
+				 * aperture accordingly when using aliasing ppgtt. */
+				gtt_size -= GEN6_PPGTT_PD_ENTRIES * PAGE_SIZE;
+				dev_priv->mm.first_ppgtt_pde_in_gtt =
+					gtt_total_entries(dev_priv->gtt) -
+						GEN6_PPGTT_PD_ENTRIES;
+			}
 		}
 
 		i915_gem_setup_global_gtt(dev, 0, mappable_size, gtt_size);
