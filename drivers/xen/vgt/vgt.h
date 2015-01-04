@@ -216,6 +216,7 @@ enum transcoder {
 #define VGT_DBG_CMD		(1<<4)
 #define VGT_DBG_IRQ		(1<<5)
 #define VGT_DBG_EDID		(1<<6)
+#define VGT_DBG_XXH		(1<<7)
 #define VGT_DBG_ALL		(0xffff)
 
 /*
@@ -284,6 +285,8 @@ typedef struct {
 	uint64_t	mmio_base_gpa;	/* base guest physical address of the MMIO registers */
 	vgt_reg_t	*vReg;		/* guest view of the register state */
 	vgt_reg_t	*sReg;		/* Shadow (used by hardware) state of the register */
+	vgt_reg_t	*vReg_cp;	/* guest view of the register state at last checkpoint*/
+	vgt_reg_t	*sReg_cp;
 	uint8_t	cfg_space[VGT_CFG_SPACE_SZ];
 	bool	bar_mapped[VGT_BAR_NUM];
 	uint64_t	gt_mmio_base;	/* bar0/GTTMMIO */
@@ -319,9 +322,11 @@ typedef struct {
 } vgt_ppgtt_pde_t;
 
 #define __vreg(vgt, off) (*(vgt_reg_t *)((char *)vgt->state.vReg + off))
+#define __vreg_cp(vgt, off) (*(vgt_reg_t *)((char *)vgt->state.vReg + off))
 #define __vreg8(vgt, off) (*(char *)((char *)vgt->state.vReg + off))
 #define __vreg16(vgt, off) (*(uint16_t *)((char *)vgt->state.vReg + off))
 #define __sreg(vgt, off) (*(vgt_reg_t *)((char *)vgt->state.sReg + off))
+#define __sreg_cp(vgt, off) (*(vgt_reg_t *)((char *)vgt->state.sReg + off))
 #define __sreg8(vgt, off) (*(char *)((char *)vgt->state.sReg + off))
 #define __vreg64(vgt, off) (*(unsigned long *)((char *)vgt->state.vReg + off))
 #define __sreg64(vgt, off) (*(unsigned long *)((char *)vgt->state.sReg + off))
@@ -421,6 +426,7 @@ struct pgt_device;
 
 extern bool idle_rendering_engines(struct pgt_device *pdev, int *id);
 extern bool idle_render_engine(struct pgt_device *pdev, int id);
+extern bool vgt_ha_restore(struct pgt_device *pdev);
 extern bool vgt_do_render_context_switch(struct pgt_device *pdev);
 extern void vgt_destroy(void);
 extern void vgt_destroy_debugfs(struct vgt_device *vgt);
@@ -604,6 +610,16 @@ struct gt_port {
 	enum vgt_port physcal_port;
 };
 
+typedef struct {
+	int checkpoint_id;
+	int checkpoint_request;
+	int saving;
+	uint64_t saved_gm_size;
+	uint32_t *saved_gm;
+	uint32_t *saved_vgtt;
+	struct task_struct *checkpoint_thread;
+} vgt_ha_t;
+
 struct vgt_device {
 	enum vgt_pipe pipe_mapping[I915_MAX_PIPES];
 	int vgt_id;		/* 0 is always for dom0 */
@@ -611,7 +627,9 @@ struct vgt_device {
 	struct pgt_device *pdev;	/* the pgt device where the GT device registered. */
 	struct list_head	list;	/* FIXME: used for context switch ?? */
 	vgt_state_t	state;		/* MMIO state except ring buffers */
+	vgt_ha_t	ha;		/* vgt ha struct */
 	vgt_state_ring_t	rb[MAX_ENGINES];	/* ring buffer state */
+	vgt_state_ring_t	rb_cp[MAX_ENGINES];
 
 	struct gt_port		ports[I915_MAX_PORTS]; /* one port per PIPE */
 	struct vgt_i2c_edid_t	vgt_i2c_edid;	/* i2c bus state emulaton for reading EDID */

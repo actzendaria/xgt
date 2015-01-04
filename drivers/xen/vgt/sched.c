@@ -422,6 +422,7 @@ static void ondemand_sched_ctx(struct pgt_device *pdev)
 	/* default commit 5 tail writing at most */
 	u32 tails_per_ring[MAX_ENGINES] = {5, 5, 5, 5};
 
+	vgt_info("XXH\n");
 	//if (is_vgt_rb_tailq_empty(next_vgt, pdev->max_engines))
 	//	return;
 
@@ -673,6 +674,7 @@ void vgt_sched_ctx(struct pgt_device *pdev)
 	struct vgt_device *cur_vgt = current_render_owner(pdev);
 	struct list_head *head = &pdev->rendering_runq_head;
 
+	vgt_info("XXH\n");
 	/* TODO: before the first vgt was put into runqueue,
 	 * the timestamp was used as the initial value of vgt_sched_tstamp
 	 */
@@ -855,7 +857,7 @@ void vgt_submit_commands(struct vgt_device *vgt, int ring_id)
 
 	/*
 	 * otherwise submit to GPU, even when cmd_nr is ZERO.
-	 8 this is necessary, because sometimes driver may write
+	 * this is necessary, because sometimes driver may write
 	 * old tail which must take real effect.
 	 */
 	apply_tail_list(vgt, ring_id, submission_id);

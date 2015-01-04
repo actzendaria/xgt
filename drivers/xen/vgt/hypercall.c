@@ -226,6 +226,7 @@ int vgt_hvm_set_trap_area(struct vgt_device *vgt)
 	info->mmio[0].s = bar_s;
 	info->mmio[0].e = bar_e;
 
+	printk("XXH mmio s %llx e %llx\n", bar_s, bar_e);
 	r = HYPERVISOR_domctl(&domctl);
 	if (r) {
 		printk(KERN_ERR "VGT: %s(): fail to trap area: %d.\n", __func__, r);

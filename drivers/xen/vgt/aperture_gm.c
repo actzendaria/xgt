@@ -197,8 +197,8 @@ int allocate_vm_aperture_gm_and_fence(struct vgt_device *vgt, vgt_params_t vp)
 	struct pgt_device *pdev = vgt->pdev;
 	unsigned long *gm_bitmap = pdev->gm_bitmap;
 	unsigned long *fence_bitmap = pdev->fence_bitmap;
-	unsigned long guard = hidden_gm_base(vgt->pdev)/SIZE_1MB;
-	unsigned long gm_bitmap_total_bits = VGT_GM_BITMAP_BITS;
+	unsigned long guard = hidden_gm_base(vgt->pdev)/SIZE_1MB;//256
+	unsigned long gm_bitmap_total_bits = VGT_GM_BITMAP_BITS;//2K
 	unsigned long aperture_search_start = 0;
 	unsigned long visable_gm_start, hidden_gm_start = guard;
 	unsigned long fence_base;

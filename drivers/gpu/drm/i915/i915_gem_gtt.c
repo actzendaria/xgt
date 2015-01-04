@@ -1431,9 +1431,11 @@ void i915_gem_init_global_gtt(struct drm_device *dev)
 	if (!dev_priv->in_xen_vgt)
 		gtt_size -= PAGE_SIZE;
 
+	printk("XXH: intel_enable_ppgtt %d\n", i915_enable_ppgtt);
 	if (intel_enable_ppgtt(dev)) {
 		int ret;
 
+		printk("XXH: ppgtt enabled\n");
 		if (!dev_priv->in_xen_vgt) {
 			/*
 			 * VGT will handle this in i915_balloon().
@@ -1459,6 +1461,7 @@ void i915_gem_init_global_gtt(struct drm_device *dev)
 		if (INTEL_INFO(dev)->gen < 8)
 			gtt_size += GEN6_PPGTT_PD_ENTRIES*PAGE_SIZE;
 	}
+	printk("XXH: mappable_size %ld gtt_size %ld\n", mappable_size, gtt_size);
 	i915_gem_setup_global_gtt(dev, 0, mappable_size, gtt_size);
 }
 

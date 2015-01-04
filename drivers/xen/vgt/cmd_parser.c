@@ -275,6 +275,7 @@ static void apply_post_handle_list(vgt_state_ring_t *rs, uint64_t submission_id)
 	}
 }
 
+static int atl_cnt = 0;
 /* submit tails according to submission id */
 void apply_tail_list(struct vgt_device *vgt, int ring_id,
 	uint64_t submission_id)
@@ -285,6 +286,11 @@ void apply_tail_list(struct vgt_device *vgt, int ring_id,
 	struct cmd_general_info *list = &rs->tail_list;
 	struct cmd_tail_info *entry;
 
+	atl_cnt++;
+	/*if (atl_cnt <= 100 || atl_cnt % 1000 == 0)
+	{
+		vgt_info("XXH: %d\n", atl_cnt);
+	}*/
 	next = list->head;
 	while (next != list->tail) {
 		next++;
@@ -305,6 +311,11 @@ void apply_tail_list(struct vgt_device *vgt, int ring_id,
 		}
 
 		VGT_WRITE_TAIL(pdev, ring_id, entry->tail);
+		/*if (atl_cnt <= 100 || atl_cnt % 1000 == 0)
+		{
+			printk("XXH: ring %d head %x next %x tail %x count %x\n", ring_id, list->head, next, list->tail, list->count);
+			printk("XXH: ring %d subid %llx entryid %llx entrytail %x\n", ring_id, submission_id, entry->request_id, entry->tail);
+		}*/
 		list->head = next;
 	}
 }
@@ -2081,10 +2092,11 @@ static int vgt_cmd_parser_exec(struct parser_exec_state *s)
 	/* Let's keep this logic here. Someone has special needs for dumping
 	 * commands can customize this code snippet.
 	 */
-#if 0
-	klog_printk("%s ip(%08lx): ",
-			s->buf_type == RING_BUFFER_INSTRUCTION ?
-			"RB" : "BB",
+#if 1
+	klog_printk("CMD %s name %s op 0x%x ip(%08lx): ",
+			s->buf_type == RING_BUFFER_INSTRUCTION ? "RB" : "BB",
+			s->info->name,
+			s->info->opcode,
 			s->ip_gma);
 	cmd_len = cmd_length(s);
 	for (i = 0; i < cmd_len; i++) {
@@ -2197,7 +2209,7 @@ static int __vgt_scan_vring(struct vgt_device *vgt, int ring_id, vgt_reg_t head,
 		return rc;
 
 	klog_printk("ring buffer scan start on ring %d\n", ring_id);
-	vgt_dbg(VGT_DBG_CMD, "scan_start: start=%lx end=%lx\n", gma_head, gma_tail);
+	vgt_dbg(VGT_DBG_CMD, "XXH CMD scan_start: start=%lx end=%lx\n", gma_head, gma_tail);
 	while(s.ip_gma != gma_tail){
 		if (s.buf_type == RING_BUFFER_INSTRUCTION){
 			ASSERT((s.ip_gma >= base) && (s.ip_gma < gma_bottom));

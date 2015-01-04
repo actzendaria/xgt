@@ -263,6 +263,7 @@ static int vgt_thread(void *priv)
 			}
 			else {
 				vgt_lock_dev(pdev, cpu);
+				vgt_info("XXH\n");
 				pdev->next_sched_vgt = vgt_dom0;
 				vgt_raise_request(pdev, VGT_REQUEST_CTX_SWITCH);
 				vgt_unlock_dev(pdev, cpu);
@@ -333,6 +334,7 @@ bool initial_phys_states(struct pgt_device *pdev)
 
 	pdev->gtt_size = vgt_get_gtt_size(pdev->pbus);
 	gm_sz(pdev) = vgt_get_gtt_size(pdev->pbus) * 1024;
+	vgt_info("XXH: gtt_size %llx gm_sz %llx gm_pages %llx\n", vgt_get_gtt_size(pdev->pbus), gm_sz(pdev), gm_pages(pdev));
 	pdev->saved_gtt = vzalloc(pdev->gtt_size);
 	if (!pdev->saved_gtt)
 		return false;
@@ -386,6 +388,7 @@ bool initial_phys_states(struct pgt_device *pdev)
 
 #if 1		// TODO: runtime sanity check warning...
 	pdev->gmadr_va = ioremap (pdev->gmadr_base, pdev->bar_size[1]);
+	//pdev->gmadr_va = ioremap (pdev->gmadr_base, gm_sz(pdev));
 	if ( pdev->gmadr_va == NULL ) {
 		printk("Insufficient memory for ioremap2\n");
 		return false;
@@ -507,6 +510,7 @@ static bool vgt_initialize_pgt_device(struct pci_dev *dev, struct pgt_device *pd
 	}
 
 	pdev->reg_info = vzalloc (pdev->reg_num * sizeof(reg_info_t));
+	printk("vGT: reg_info num %d size %d\n", pdev->reg_num, (int)sizeof(reg_info_t));
 	if (!pdev->reg_info) {
 		printk("vGT: failed to allocate reg_info\n");
 		return false;
@@ -906,6 +910,8 @@ int vgt_handle_dom0_device_reset(void)
 	return 0;
 }
 
+int vgt_ha_enabled = 1;
+
 int vgt_reset_device(struct pgt_device *pdev)
 {
 	struct vgt_device *vgt;
@@ -913,6 +919,14 @@ int vgt_reset_device(struct pgt_device *pdev)
 	unsigned long ier;
 	unsigned long flags;
 	int i;
+
+	if (vgt_ha_enabled) {
+		if (!vgt_ha_restore(pdev)) {
+			vgt_err("XXH: restore failed\n");
+		}
+		else
+			return 0;
+	}
 
 	if (get_seconds() - vgt_dom0->last_reset_time < 6) {
 		vgt_err("Try to reset device too fast.\n");

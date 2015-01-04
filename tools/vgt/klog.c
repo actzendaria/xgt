@@ -353,6 +353,7 @@ static int open_cpu_files(int cpu, const char *dirname, const char *basename,
 	sprintf(tmp, "%s/%s%d", dirname, basename, cpu);
 	relay_file[cpu] = open(tmp, O_RDONLY | O_NONBLOCK);
 	if (relay_file[cpu] < 0) {
+		printf("%s %d %d\n", tmp, cpu, relay_file[cpu]);
 		printf("Couldn't open relay file %s: errcode = %s\n",
 		       tmp, strerror(errno));
 		return -1;

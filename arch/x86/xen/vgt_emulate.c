@@ -36,7 +36,7 @@
 #include <linux/page-flags.h>
 
 vgt_ops_t *vgt_ops = NULL;
-static struct vgt_device *dom0_vgt=NULL;
+struct vgt_device *dom0_vgt=NULL;
 
 /*
  * Return ID of registered vgt device.
@@ -597,6 +597,7 @@ static int is_vgt_trap_address(unsigned long pa)
 	return 0;
 }
 
+static int xcount = 0;
 int hcall_mmio_write(
         unsigned long port,
         unsigned int bytes,
@@ -608,6 +609,9 @@ int hcall_mmio_write(
     req.size = bytes;
     req.dir = PV_IOREQ_WRITE;
     req.type = PV_IOREQ_TYPE_COPY;
+    xcount ++;
+    //if (xcount % 10000 == 0)
+    //    printk("XXH mmio write %lx\n", port);
     if (HYPERVISOR_vcpu_op(VCPUOP_request_io_emulation,
 			smp_processor_id(), &req) < 0) {
 	printk("vGT: failed to do hypercall for read address (%lx)\n", port);
@@ -950,3 +954,4 @@ EXPORT_SYMBOL(xen_vgt_dom0_ready);
 EXPORT_SYMBOL(vgt_ops);
 EXPORT_SYMBOL(hcall_mmio_write);
 EXPORT_SYMBOL(hcall_mmio_read);
+EXPORT_SYMBOL(dom0_vgt);
