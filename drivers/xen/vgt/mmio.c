@@ -508,6 +508,7 @@ static void vgt_crash_domain(struct vgt_device *vgt)
 	vgt_shutdown_domain(vgt);
 }
 
+static int ioreqcount = 0;
 static int vgt_emulation_thread(void *priv)
 {
 	struct vgt_device *vgt = (struct vgt_device *)priv;
@@ -518,8 +519,10 @@ static int vgt_emulation_thread(void *priv)
 
 	struct ioreq *ioreq;
 	int irq, ret;
+	//uint64_t pa;
 
 	vgt_info("start kthread for VM%d\n", vgt->vm_id);
+	printk("XXH start kthread for VM%d\n", vgt->vm_id);
 
 	ASSERT(info->nr_vcpu <= MAX_HVM_VCPUS_SUPPORTED);
 
@@ -540,6 +543,12 @@ static int vgt_emulation_thread(void *priv)
 				continue;
 
 			ioreq = vgt_get_hvm_ioreq(vgt, vcpu);
+			ioreqcount ++;
+			/*pa = ioreq->addr;
+			if (ioreqcount % 10000 == 0)
+			printk("XXH %s%d is_vgt %d addr %llx data %llx size %d vgt_eport %d data_is_ptr %d\n", 
+			__func__, ioreqcount, ioreq->is_vgt, pa, ioreq->data, 
+			ioreq->size, ioreq->vgt_eport, ioreq->data_is_ptr);*/
 
 			ret = vgt_hvm_do_ioreq(vgt, ioreq);
 			if (unlikely(ret))
@@ -667,6 +676,7 @@ int _hvm_pio_emulation(struct vgt_device *vgt, struct ioreq *ioreq)
 	int sign;
 	//char *pdata;
 
+	//printk("XXH %s addr %llx data %llx\n", __func__, ioreq->addr, ioreq->data);
 	sign = ioreq->df ? -1 : 1;
 
 	if (ioreq->dir == IOREQ_READ) {
@@ -875,6 +885,7 @@ int vgt_hvm_info_init(struct vgt_device *vgt)
 	vgt->hvm_info = info;
 
 	info->iopage_vma = map_hvm_iopage(vgt);
+	printk("XXH vmid %d iopage_vma %llx\n", vgt->vm_id, (uint64_t)info->iopage_vma->addr);
 	if (info->iopage_vma == NULL) {
 		printk(KERN_ERR "Failed to map HVM I/O page for VM%d\n", vgt->vm_id);
 		rc = -EFAULT;
@@ -907,6 +918,9 @@ int vgt_hvm_info_init(struct vgt_device *vgt)
 			goto err;
 		}
 		info->evtchn_irq[vcpu] = irq;
+		printk("XXH %s bind vmid %d vcpu %d to vgt_eport %d irq %d\n",
+			__func__, vgt->vm_id, vcpu,
+			info->iopage->vcpu_ioreq[vcpu].vgt_eport, irq);
 	}
 
 	thread = kthread_run(vgt_emulation_thread, vgt,
