@@ -491,6 +491,13 @@ static bool gtt_mmio_write32(struct vgt_device *vgt, unsigned int off,
 
 	h_gtt_index = g2h_gtt_index(vgt, g_gtt_index);
 	vgt_write_gtt( vgt->pdev, h_gtt_index, h_gtt_val );
+	if (g_gm_is_hidden(vgt, g_addr) && vgt->vm_id != 0) {
+		static int count = 0;
+		count++;
+		if (count % 0x1000 == 0 || (g_gtt_index - 1) % 0x1000 == 0)
+			printk("XXH: hidden addr write at %llx gindex %x gval %x hindex %x hval %x\n",
+				g_addr, g_gtt_index, g_gtt_val, h_gtt_index, h_gtt_val);
+	}
 #ifdef DOM0_DUAL_MAP
 	if ( (h_gtt_index >= GTT_INDEX_MB(128)) && (h_gtt_index < GTT_INDEX_MB(192)) ){
 		vgt_write_gtt( vgt->pdev, h_gtt_index - GTT_INDEX_MB(128), h_gtt_val );

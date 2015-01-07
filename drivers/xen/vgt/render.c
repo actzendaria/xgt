@@ -1840,23 +1840,31 @@ int vgt_ha_save_gtt_gm(struct vgt_device *vgt)
 
 	t0 = vgt_get_cycles();
 	memcpy(vgt->ha.saved_vgtt, vgt->vgtt, vgt->vgtt_sz);
-	for (i = 0; i < vgt_aperture_sz(vgt) >> PAGE_SHIFT; i++)
+	t1 = vgt_get_cycles();
+	cost = t1 - t0;
+	printk("XXH save gtt cost %lld\n", cost);
+	t0 = vgt_get_cycles();
+	low_frame_cnt = vgt_aperture_sz(vgt) >> PAGE_SHIFT;
+	for (i = 0; i < low_frame_cnt; i++)
 	{
 		gma = low_base + (i << PAGE_SHIFT);
 		va = vgt_gma_to_va(vgt, gma, false);
-		memcpy(vgt->ha.saved_gm + (i << PAGE_SHIFT), va, 1 << PAGE_SHIFT);
+		memcpy((char *)vgt->ha.saved_gm + (i << PAGE_SHIFT), va, 1 << PAGE_SHIFT);
 	}
-	low_frame_cnt = i;
-	vgt_info("XXH: low_pages_count %x\n", low_frame_cnt);
+	t1 = vgt_get_cycles();
+	cost = t1 - t0;
+	printk("XXH save low cost %lld\n", cost);
+	t0 = vgt_get_cycles();
+	printk("XXH: low_pages_count %x\n", low_frame_cnt);
 	for (i = 0; i <  vgt_hidden_gm_sz(vgt) >> PAGE_SHIFT; i++)
 	{
 		gma = high_base + (i << PAGE_SHIFT);
 		va = vgt_gma_to_va(vgt, gma, false);
-		memcpy(vgt->ha.saved_gm + ((low_frame_cnt + i) << PAGE_SHIFT), va, 1 << PAGE_SHIFT);
+		memcpy((char *)vgt->ha.saved_gm + ((low_frame_cnt + i) << PAGE_SHIFT), va, 1 << PAGE_SHIFT);
 	}
 	t1 = vgt_get_cycles();
 	cost = t1 - t0;
-	vgt_info("XXH save mem cost time %lld\n", cost);
+	printk("XXH save high cost %lld\n", cost);
 	return 0;
 }
 
@@ -1867,10 +1875,7 @@ int vgt_ha_checkpoint_thread(void *priv)
 	struct vgt_device *now;
 	u64 wait_idle;
 	cycles_t t0, t1;
-	int i, cpu, cnt = 0;
-	//int lasttail[4];
-	//u64 tailstep[4];
-	void *test1, *test2, *test3, *test4, *test5;
+	int i, cpu;
 
 	vgt->ha.checkpoint_id = 0;
 	vgt->ha.checkpoint_request = 0;
@@ -1904,78 +1909,10 @@ int vgt_ha_checkpoint_thread(void *priv)
 		if (dom0_vgt != vgt)
 			vgt_ha_save_gtt_gm(vgt);
 
-		test1 = vgt_aperture_vbase(vgt);
-		test4 = (void *)aperture_2_gm(pdev, vgt_aperture_base(vgt));
-		test2 = vgt_gma_to_va(vgt, (unsigned long)test4, false);
-		printk("XXH: mem addr check: vgt %d vgt_aperture_vbase %llx va %llx\n", vgt->vm_id,
-				(unsigned long long)test1, (unsigned long long)test2);
-		test5 = (void *)vgt_gma_2_gpa(vgt, (unsigned long)test4);
-		printk("XXH: mem addr check: vgt %d gma %llx gpa %llx entry %llx\n", vgt->vm_id,
-				(unsigned long long)test4, (unsigned long long)test5, (unsigned long long)vgt->vgtt[(unsigned long)test4 >> GTT_PAGE_SHIFT]);
-		for (i=0; i<vgt_aperture_sz(vgt)/0x1000; i+=1024) {
-			test3 = vgt_gma_to_va(vgt, aperture_2_gm(pdev, vgt_aperture_base(vgt))+0x1000*i, false);
-			printk("XXH: mem addr check: off %x va %llx\n", 0x1000*i, (unsigned long long)test3);
-			test3 = vgt_gma_to_va(vgt, aperture_2_gm(pdev, vgt_aperture_base(vgt))+0x1000*i+4, false);
-			printk("XXH: mem addr check: off %x va %llx\n", 0x1000*i+4, (unsigned long long)test3);
-		}
-		cnt = 0;
-		if (!vgt->vgtt) {
-			printk("XXH: vgt->vgtt NULL\n");
-		}
-		for (i=0; i < gm_pages(pdev); i++) {
-			cnt++;
-			printk("vgtt[%d] %x", i, vgt->vgtt[i]);
-			if (dom0_vgt != vgt)
-				printk(" dom0 vgtt[%d] %x\n", i, dom0_vgt->vgtt[i]);
-			else
-				printk("\n");
-			if (vgt->vgtt[i] != vgt_read_gtt(pdev, i)) {
-				vgt_info("vgt->vgtt[%d]%x vgt_read_gtt(pdev, %d)%x",
-					i, vgt->vgtt[i],
-					i, vgt_read_gtt(pdev, i));
-				break;
-			}
-			else
-				vgt_info("vgt->vgtt matches vgt_read_gtt\n");
-			if (cnt > 37)
-				break;
-		}
 		for (i=0; i < pdev->max_engines; i++) {
 			struct vgt_rsvd_ring *ring = &pdev->ring_buffer[i];
 			vgt_state_ring_t *rs = &vgt->rb[i];
 			vgt_state_ring_t *rb = &vgt->rb_cp[i];
-			/*vgt_ringbuffer_t *vring = &rs->vring;
-			vgt_ringbuffer_t *sring = &rs->sring;
-			void *ip_va = vgt_gma_to_va(vgt, VGT_READ_START(pdev, i) + rs->last_scan_head, false);
-			void *start_va = vgt_gma_to_va(vgt, VGT_READ_START(pdev, i), false);
-			int tl = VGT_READ_HEAD(pdev, i);
-			if (vgt->ha.checkpoint_id == 1) {
-				tailstep[i] = 0;
-				lasttail[i] = (u64)tl;
-			}
-			else {
-				tailstep[i] += (u64)(tl - lasttail[i]);
-			}
-			if (vgt->ha.checkpoint_id % 1000 == 0 && i % 2 == 0)
-			{
-				printk("XXH: mem addr check: ring %d cp %d\n", i, vgt->ha.checkpoint_id);
-				printk("XXH: ring->virtual_start %llx start_va %llx\ngmadrbase %llx gmadrva %llx\nstart %x head %x tail %x\nlast_scan_head %x\n",
-					(unsigned long long)ring->virtual_start,
-					(unsigned long long)start_va,
-					(unsigned long long)pdev->gmadr_base,
-					(unsigned long long)pdev->gmadr_va,
-					VGT_READ_START(pdev, i),
-					VGT_READ_HEAD(pdev, i),
-					VGT_READ_TAIL(pdev, i),
-					rs->last_scan_head);
-				printk("XXH: ring size %x last tail %x now tail %x steptotal %llx stepavg %llx\n",
-					ring->size,
-					lasttail[i],
-					tl,
-					tailstep[i],
-					tailstep[i] / vgt->ha.checkpoint_id);
-			}
-			lasttail[i] = (u64)tl;*/
 
 			if (!ring->need_switch)
 				continue;
