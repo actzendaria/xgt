@@ -329,9 +329,13 @@ int create_vgt_instance(struct pgt_device *pdev, struct vgt_device **ptr_vgt, vg
 	vgt->warn_untrack = 1;
 
 	if (vgt->vm_id != 0) {
+		vgt->ha.saved_vgtt = vzalloc(vgt->vgtt_sz);
 		vgt->ha.saved_gm_size = vp.gm_sz * 0x100000;
 		vgt->ha.saved_gm = vzalloc(vgt->ha.saved_gm_size);
-		vgt->ha.saved_vgtt = vzalloc(vgt->vgtt_sz);
+		vgt_info("XXH: backup vgtt size %llx addr %llx gm size %llx addr %llx\n",
+				(unsigned long long)vgt->vgtt_sz, (unsigned long long)vgt->ha.saved_vgtt, (unsigned long long)vgt->ha.saved_gm_size, (unsigned long long)vgt->ha.saved_gm);
+		if (!vgt->ha.saved_gm)
+			goto err;
 	}
 	vgt_info("XXH creating ha thread\n");
 	thread = NULL;
@@ -354,8 +358,10 @@ err:
 	if (vgt->ha.checkpoint_thread)
 		kthread_stop(vgt->ha.checkpoint_thread);
 	if (vgt->vm_id != 0) {
-		vfree(vgt->ha.saved_gm);
-		vfree(vgt->ha.saved_vgtt);
+		if (vgt->ha.saved_gm)
+			vfree(vgt->ha.saved_gm);
+		if (vgt->ha.saved_vgtt)
+			vfree(vgt->ha.saved_vgtt);
 	}
 	if (vgt->vgt_id >= 0)
 		free_vgt_id(vgt->vgt_id);
