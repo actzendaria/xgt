@@ -877,8 +877,14 @@ static ssize_t vgt_ha_checkpoint_write(struct file *file,
 
 	if (!strncmp(buf, "create", 6)) {
 		vgt->ha.checkpoint_request = 1;
+	} else if (!strncmp(buf, "enable", 6)) {
+		vgt->ha.enabled = !vgt->ha.enabled;
+		vgt_info("XXH: ha enabled status %d\n", vgt->ha.enabled);
+	} else if (!strncmp(buf, "restore", 7)) {
+		vgt->ha.restore_request = 1;
+		vgt_info("XXH: ha restore request set\n");
 	} else {
-		vgt_info("XXH accepted cmd:\ncreate\n");
+		vgt_info("XXH: accepted cmd:\ncreate\nenable\nrestore\n");
 	}
 
 	return count;
