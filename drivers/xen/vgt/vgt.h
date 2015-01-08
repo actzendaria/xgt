@@ -322,11 +322,11 @@ typedef struct {
 } vgt_ppgtt_pde_t;
 
 #define __vreg(vgt, off) (*(vgt_reg_t *)((char *)vgt->state.vReg + off))
-#define __vreg_cp(vgt, off) (*(vgt_reg_t *)((char *)vgt->state.vReg + off))
+#define __vreg_cp(vgt, off) (*(vgt_reg_t *)((char *)vgt->state.vReg_cp + off))
 #define __vreg8(vgt, off) (*(char *)((char *)vgt->state.vReg + off))
 #define __vreg16(vgt, off) (*(uint16_t *)((char *)vgt->state.vReg + off))
 #define __sreg(vgt, off) (*(vgt_reg_t *)((char *)vgt->state.sReg + off))
-#define __sreg_cp(vgt, off) (*(vgt_reg_t *)((char *)vgt->state.sReg + off))
+#define __sreg_cp(vgt, off) (*(vgt_reg_t *)((char *)vgt->state.sReg_cp + off))
 #define __sreg8(vgt, off) (*(char *)((char *)vgt->state.sReg + off))
 #define __vreg64(vgt, off) (*(unsigned long *)((char *)vgt->state.vReg + off))
 #define __sreg64(vgt, off) (*(unsigned long *)((char *)vgt->state.sReg + off))
@@ -426,7 +426,7 @@ struct pgt_device;
 
 extern bool idle_rendering_engines(struct pgt_device *pdev, int *id);
 extern bool idle_render_engine(struct pgt_device *pdev, int id);
-extern bool vgt_ha_restore(struct pgt_device *pdev);
+extern bool vgt_ha_restore(struct vgt_device *vgt);
 extern bool vgt_do_render_context_switch(struct pgt_device *pdev);
 extern void vgt_destroy(void);
 extern void vgt_destroy_debugfs(struct vgt_device *vgt);
@@ -613,7 +613,9 @@ struct gt_port {
 typedef struct {
 	int checkpoint_id;
 	int checkpoint_request;
+	int restore_request;
 	int saving;
+	bool enabled;
 	uint64_t saved_gm_size;
 	uint32_t *saved_gm;
 	uint32_t *saved_vgtt;

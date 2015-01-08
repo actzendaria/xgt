@@ -330,7 +330,7 @@ int create_vgt_instance(struct pgt_device *pdev, struct vgt_device **ptr_vgt, vg
 
 	if (vgt->vm_id != 0) {
 		vgt->ha.saved_vgtt = vzalloc(vgt->vgtt_sz);
-		vgt->ha.saved_gm_size = vp.gm_sz * 0x100000;
+		vgt->ha.saved_gm_size = (vgt->vgtt_sz / GTT_ENTRY_SIZE) << GTT_PAGE_SHIFT;
 		vgt->ha.saved_gm = vzalloc(vgt->ha.saved_gm_size);
 		vgt_info("XXH: backup vgtt size %llx addr %llx gm size %llx addr %llx\n",
 				(unsigned long long)vgt->vgtt_sz, (unsigned long long)vgt->ha.saved_vgtt, (unsigned long long)vgt->ha.saved_gm_size, (unsigned long long)vgt->ha.saved_gm);

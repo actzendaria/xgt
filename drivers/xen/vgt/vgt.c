@@ -910,8 +910,6 @@ int vgt_handle_dom0_device_reset(void)
 	return 0;
 }
 
-int vgt_ha_enabled = 1;
-
 int vgt_reset_device(struct pgt_device *pdev)
 {
 	struct vgt_device *vgt;
@@ -919,14 +917,6 @@ int vgt_reset_device(struct pgt_device *pdev)
 	unsigned long ier;
 	unsigned long flags;
 	int i;
-
-	if (vgt_ha_enabled) {
-		if (!vgt_ha_restore(pdev)) {
-			vgt_err("XXH: restore failed\n");
-		}
-		else
-			return 0;
-	}
 
 	if (get_seconds() - vgt_dom0->last_reset_time < 6) {
 		vgt_err("Try to reset device too fast.\n");
