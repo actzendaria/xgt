@@ -508,6 +508,7 @@ static void vgt_crash_domain(struct vgt_device *vgt)
 	vgt_shutdown_domain(vgt);
 }
 
+static int ioreqcount = 0;
 static int vgt_emulation_thread(void *priv)
 {
 	struct vgt_device *vgt = (struct vgt_device *)priv;
@@ -540,6 +541,14 @@ static int vgt_emulation_thread(void *priv)
 				continue;
 
 			ioreq = vgt_get_hvm_ioreq(vgt, vcpu);
+			ioreqcount ++;
+			/*
+			pa = ioreq->addr;
+			if (ioreqcount % 10000 == 0)
+				printk("XXH %s%d is_vgt %d addr %llx data %llx size %d vgt_eport %d data_is_ptr %d\n", 
+					__func__, ioreqcount, ioreq->is_vgt, pa, ioreq->data, 
+					ioreq->size, ioreq->vgt_eport, ioreq->data_is_ptr);
+			*/
 
 			ret = vgt_hvm_do_ioreq(vgt, ioreq);
 			if (unlikely(ret))
@@ -907,6 +916,9 @@ int vgt_hvm_info_init(struct vgt_device *vgt)
 			goto err;
 		}
 		info->evtchn_irq[vcpu] = irq;
+		printk("XXH %s bind vmid %d vcpu %d to vgt_eport %d irq %d\n",
+			__func__, vgt->vm_id, vcpu,
+			info->iopage->vcpu_ioreq[vcpu].vgt_eport, irq);
 	}
 
 	thread = kthread_run(vgt_emulation_thread, vgt,

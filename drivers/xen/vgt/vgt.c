@@ -333,6 +333,7 @@ bool initial_phys_states(struct pgt_device *pdev)
 
 	pdev->gtt_size = vgt_get_gtt_size(pdev->pbus);
 	gm_sz(pdev) = vgt_get_gtt_size(pdev->pbus) * 1024;
+	vgt_info("XXH: gtt_size %llx gm_sz %llx gm_pages %llx\n", vgt_get_gtt_size(pdev->pbus), gm_sz(pdev), gm_pages(pdev));
 	pdev->saved_gtt = vzalloc(pdev->gtt_size);
 	if (!pdev->saved_gtt)
 		return false;
@@ -507,6 +508,7 @@ static bool vgt_initialize_pgt_device(struct pci_dev *dev, struct pgt_device *pd
 	}
 
 	pdev->reg_info = vzalloc (pdev->reg_num * sizeof(reg_info_t));
+	printk("vGT: reg_info num %d size %d\n", pdev->reg_num, (int)sizeof(reg_info_t));
 	if (!pdev->reg_info) {
 		printk("vGT: failed to allocate reg_info\n");
 		return false;

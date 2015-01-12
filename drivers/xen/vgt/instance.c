@@ -24,6 +24,7 @@
  */
 
 #include "vgt.h"
+#include <linux/kthread.h>
 
 /*
  * bitmap of allocated vgt_ids.
@@ -83,6 +84,9 @@ static int create_state_instance(struct vgt_device *vgt)
 	state = &vgt->state;
 	state->vReg = vzalloc(vgt->pdev->mmio_size);
 	state->sReg = vzalloc(vgt->pdev->mmio_size);
+	state->vReg_cp = vzalloc(vgt->pdev->mmio_size);
+	state->sReg_cp = vzalloc(vgt->pdev->mmio_size);
+
 	if ( state->vReg == NULL || state->sReg == NULL )
 	{
 		printk("VGT: insufficient memory allocation at %s\n", __FUNCTION__);
@@ -103,6 +107,7 @@ static int create_state_instance(struct vgt_device *vgt)
 	return 0;
 }
 
+extern int vgt_ha_checkpoint_thread(void *);
 /*
  * priv: VCPU ?
  */
@@ -113,6 +118,7 @@ int create_vgt_instance(struct pgt_device *pdev, struct vgt_device **ptr_vgt, vg
 	char *cfg_space;
 	int rc = -ENOMEM;
 	int i;
+	struct task_struct *thread;
 
 	vgt_info("vm_id=%d, low_gm_sz=%dMB, high_gm_sz=%dMB, fence_sz=%d, vgt_primary=%d\n",
 		vp.vm_id, vp.aperture_sz, vp.gm_sz-vp.aperture_sz, vp.fence_sz, vp.vgt_primary);
@@ -227,7 +233,7 @@ int create_vgt_instance(struct pgt_device *pdev, struct vgt_device **ptr_vgt, vg
 		cfg_space[VGT_REG_CFG_CLASS_PROG_IF] = VGT_PCI_CLASS_VGA_OTHER;
 	}
 
-	state_sreg_init (vgt);
+	state_sreg_init(vgt);
 	state_vreg_init(vgt);
 
 	/* setup the ballooning information */
@@ -270,6 +276,7 @@ int create_vgt_instance(struct pgt_device *pdev, struct vgt_device **ptr_vgt, vg
 			(rc = vgt_hvm_enable(vgt)) < 0)
 			goto err;
 		if (pdev->enable_ppgtt) {
+			vgt_info("XXH: vm %d init shadow ppgtt\n", vgt->vm_id);
 			hash_init((vgt->wp_table));
 			vgt_init_shadow_ppgtt(vgt);
 		}
@@ -321,6 +328,26 @@ int create_vgt_instance(struct pgt_device *pdev, struct vgt_device **ptr_vgt, vg
 		vgt_init_rb_tailq(vgt);
 
 	vgt->warn_untrack = 1;
+
+	if (vgt->vm_id != 0) {
+		vgt->ha.saved_vgtt = vzalloc(vgt->vgtt_sz);
+		vgt->ha.saved_gm_size = (vgt->vgtt_sz / GTT_ENTRY_SIZE) << GTT_PAGE_SHIFT;
+		vgt->ha.saved_gm = vzalloc(vgt->ha.saved_gm_size);
+		vgt_info("XXH: backup vgtt size %llx addr %llx gm size %llx addr %llx\n",
+				(unsigned long long)vgt->vgtt_sz, (unsigned long long)vgt->ha.saved_vgtt,
+				(unsigned long long)vgt->ha.saved_gm_size, (unsigned long long)vgt->ha.saved_gm);
+		if (!vgt->ha.saved_gm)
+			goto err;
+	}
+	vgt_info("XXH creating ha thread\n");
+	thread = NULL;
+	thread = kthread_run(vgt_ha_checkpoint_thread, vgt, "vgt_ha:%d", vgt->vm_id);
+	if(IS_ERR(thread)) {
+		vgt_info("XXH creating ha thread failed\n");
+		goto err;
+	}
+	vgt->ha.checkpoint_thread = thread;
+
 	return 0;
 err:
 	vgt_hvm_info_deinit(vgt);
@@ -329,6 +356,14 @@ err:
 	vfree(vgt->vgtt);
 	vfree(vgt->state.vReg);
 	vfree(vgt->state.sReg);
+	if (vgt->ha.checkpoint_thread)
+		kthread_stop(vgt->ha.checkpoint_thread);
+	if (vgt->vm_id != 0) {
+		if (vgt->ha.saved_gm)
+			vfree(vgt->ha.saved_gm);
+		if (vgt->ha.saved_vgtt)
+			vfree(vgt->ha.saved_vgtt);
+	}
 	if (vgt->vgt_id >= 0)
 		free_vgt_id(vgt->vgt_id);
 	vfree(vgt);
@@ -349,6 +384,13 @@ void vgt_release_instance(struct vgt_device *vgt)
 	vgt_destroy_mmio_dev(vgt);
 
 	vgt_destroy_debugfs(vgt);
+
+	if (vgt->ha.checkpoint_thread)
+		kthread_stop(vgt->ha.checkpoint_thread);
+	if (vgt->vm_id != 0) {
+		vfree(vgt->ha.saved_gm);
+		vfree(vgt->ha.saved_vgtt);
+	}
 
 	vgt_lock_dev(pdev, cpu);
 
@@ -442,6 +484,8 @@ void vgt_release_instance(struct vgt_device *vgt)
 	vfree(vgt->vgtt);
 	vfree(vgt->state.vReg);
 	vfree(vgt->state.sReg);
+	vfree(vgt->state.vReg_cp);
+	vfree(vgt->state.sReg_cp);
 	vfree(vgt);
 	printk("vGT: vgt_release_instance done\n");
 }

@@ -36,7 +36,7 @@
 #include <linux/page-flags.h>
 
 vgt_ops_t *vgt_ops = NULL;
-static struct vgt_device *dom0_vgt=NULL;
+struct vgt_device *dom0_vgt=NULL;
 
 /*
  * Return ID of registered vgt device.
@@ -950,3 +950,4 @@ EXPORT_SYMBOL(xen_vgt_dom0_ready);
 EXPORT_SYMBOL(vgt_ops);
 EXPORT_SYMBOL(hcall_mmio_write);
 EXPORT_SYMBOL(hcall_mmio_read);
+EXPORT_SYMBOL(dom0_vgt);

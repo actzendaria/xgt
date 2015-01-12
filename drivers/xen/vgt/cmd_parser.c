@@ -275,6 +275,7 @@ static void apply_post_handle_list(vgt_state_ring_t *rs, uint64_t submission_id)
 	}
 }
 
+static int atl_cnt = 0;
 /* submit tails according to submission id */
 void apply_tail_list(struct vgt_device *vgt, int ring_id,
 	uint64_t submission_id)
@@ -285,6 +286,7 @@ void apply_tail_list(struct vgt_device *vgt, int ring_id,
 	struct cmd_general_info *list = &rs->tail_list;
 	struct cmd_tail_info *entry;
 
+	atl_cnt++;
 	next = list->head;
 	while (next != list->tail) {
 		next++;
@@ -305,6 +307,14 @@ void apply_tail_list(struct vgt_device *vgt, int ring_id,
 		}
 
 		VGT_WRITE_TAIL(pdev, ring_id, entry->tail);
+		/*
+		if (atl_cnt <= 100 || atl_cnt % 1000 == 0) {
+			klog_printk("XXH: ring %d head %x next %x tail %x count %x\n",
+				ring_id, list->head, next, list->tail, list->count);
+			klog_printk("XXH: ring %d subid %llx entryid %llx entrytail %x\n",
+				ring_id, submission_id, entry->request_id, entry->tail);
+		}
+		*/
 		list->head = next;
 	}
 }

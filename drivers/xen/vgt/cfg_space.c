@@ -273,6 +273,7 @@ bool vgt_emulate_cfg_write(struct vgt_device *vgt, unsigned int off,
 				} else {
 
 					vgt_hvm_map_aperture(vgt, 1);
+					printk("XXH VGT_REG_CFG_COMMAND\n");
 					vgt_hvm_set_trap_area(vgt);
 				}
 			} else {
@@ -307,8 +308,10 @@ bool vgt_emulate_cfg_write(struct vgt_device *vgt, unsigned int off,
 				vgt_pci_bar_write_32(vgt, off, new);
 				if ((off & ~3) == VGT_REG_CFG_SPACE_BAR1)
 					vgt_hvm_map_aperture(vgt, 1);
-				if ((off & ~3) == VGT_REG_CFG_SPACE_BAR0)
+				if ((off & ~3) == VGT_REG_CFG_SPACE_BAR0) {
+					printk("XXH VGT_REG_CFG_SPACE_BAR0");
 					vgt_hvm_set_trap_area(vgt);
+				}
 			}
 			break;
 
