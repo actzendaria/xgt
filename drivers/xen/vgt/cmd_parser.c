@@ -558,6 +558,11 @@ static int ip_gma_set(struct parser_exec_state *s, unsigned long ip_gma)
 	s->ip_va = vgt_gma_to_va(s->vgt, ip_gma,
 			s->buf_addr_type == PPGTT_BUFFER);
 
+	/* ZZZ: print commands to set */
+	klog_printk("Z3: RBuff ip_gma(%s): %lu (0x%x)\n", s->buf_type==RING_BUFFER_INSTRUCTION?
+		"RBuff":(s->buf_type==BATCH_BUFFER_INSTRUCTION?"BBuff":"B2Buff"), 
+		s->vgt==vgt_dom0?"dom0":"domU", ip_gma, ip_gma);
+
 	if (s->ip_va == NULL){
 		vgt_err("ERROR: gma %lx is invalid, fail to set\n",s->ip_gma);
 		dump_stack();
@@ -2066,6 +2071,14 @@ static int vgt_cmd_parser_exec(struct parser_exec_state *s)
 				s->ring_start + s->ring_size, s->ip_gma, s->ip_va);
 
 		return -EFAULT;
+	}
+
+	if(info != NULL && s->vgt != vgt_dom0){
+		klog_printk("Z3 cmdexec(domu): cmd 0x%x, opcode=0x%x, name=%s; %s; %s\n",
+		*s->ip_va, vgt_get_opcode(*s->ip_va, s->ring_id),
+		info->name,
+		s->buf_type == RING_BUFFER_INSTRUCTION ? "RING_BUFFER": "BATCH_BUFFER",
+		s->buf_addr_type == GTT_BUFFER ? "GTT" : "PPGTT");
 	}
 
 	s->info = info;
