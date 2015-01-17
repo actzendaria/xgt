@@ -538,9 +538,9 @@ static void parser_exec_state_dump(struct parser_exec_state *s)
 			" ring_head(%08lx) ring_tail(%08lx)\n", s->vgt->vgt_id,
 			s->ring_id, s->ring_start, s->ring_start + s->ring_size, s->ring_head, s->ring_tail);
 
-	vgt_err("  %s %s ip_gma(%08lx) ",
+	vgt_err("  %s %s ip_gma(%08lx) gttentry(%x)",
 			s->buf_type == RING_BUFFER_INSTRUCTION ? "RING_BUFFER": "BATCH_BUFFER",
-			s->buf_addr_type == GTT_BUFFER ? "GTT" : "PPGTT", s->ip_gma);
+			s->buf_addr_type == GTT_BUFFER ? "GTT" : "PPGTT", s->ip_gma, s->vgt->vgtt[GTT_OFFSET_TO_INDEX(s->ip_gma)]);
 
 	if (s->ip_va == NULL){
 		vgt_err(" ip_va(NULL)\n");

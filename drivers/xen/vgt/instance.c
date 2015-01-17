@@ -552,6 +552,7 @@ void vgt_reset_virtual_states(struct vgt_device *vgt, unsigned long ring_bitmap)
 {
 	ASSERT(spin_is_locked(&vgt->pdev->lock));
 
+	vgt_info("XXH:\n");
 	vgt_reset_ringbuffer(vgt, ring_bitmap);
 
 	vgt_reset_ppgtt(vgt, ring_bitmap);
