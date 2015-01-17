@@ -261,18 +261,22 @@ static void apply_post_handle_list(vgt_state_ring_t *rs, uint64_t submission_id)
 	struct cmd_handler_info *entry;
 
 	next = list->head;
+	klog_printk("ZD %s: sub_id:%llu ", __func__, submission_id);
+	klog_printk("next:%d tail:%d ", next, list->tail);
 	while (next != list->tail) {
 		next++;
 		if (next == list->count)
 			next = 0;
 		entry = &list->handler[next];
 		/* TODO: handle id wrap */
+		klog_printk("req_id[%d]:%llu ", next, entry->request_id);
 		if (entry->request_id > submission_id)
 			break;
 
 		entry->handler(&entry->exec_state);
 		list->head = next;
 	}
+	klog_printk("\n");
 }
 
 static int atl_cnt = 0;
@@ -648,7 +652,10 @@ static inline int cmd_length(struct parser_exec_state *s)
 static int vgt_cmd_handler_mi_set_context(struct parser_exec_state* s)
 {
 	struct vgt_device *vgt = s->vgt;
+	static int mi_set_cnt = 0;
 
+	mi_set_cnt++;
+	klog_printk("ZD: %s cnt:%d\n", __func__, mi_set_cnt);
 	if (!vgt->has_context) {
 		printk("VM %d activate context\n", vgt->vm_id);
 		vgt->has_context = 1;
@@ -2153,8 +2160,12 @@ static int vgt_cmd_parser_exec(struct parser_exec_state *s)
 
 		if (!post_handle)
 			rc = info->handler(s);
-		else
+		else {
+			if (info != NULL && s->vgt != vgt_dom0) {
+				klog_printk("ZD domu %s: \n", __func__);
+			}
 			rc = add_post_handle_entry(s, info->handler);
+		}
 
 		if (rc < 0) {
 			vgt_err("%s handler error", info->name);

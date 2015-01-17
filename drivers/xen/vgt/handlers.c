@@ -277,7 +277,7 @@ static bool handle_device_reset(struct vgt_device *vgt, unsigned int offset,
 	vgt_info("VM %d is trying to reset device: %s.\n", vgt->vm_id,
 		ring_bitmap == 0xff ? "full reset" : "per-engine reset");
 
-	show_debug(vgt->pdev);
+	//show_debug(vgt->pdev);
 
 	/* after this point, driver should re-initialize the device */
 	vgt->warn_untrack = 1;
@@ -286,6 +286,7 @@ static bool handle_device_reset(struct vgt_device *vgt, unsigned int offset,
 
 	vgt_reset_virtual_states(vgt, ring_bitmap);
 
+	/* if NOT FULL RESET, DOMU, enable rings before reset*/
 	if (ring_bitmap != 0xff && vgt->vm_id && vgt->enabled_rings_before_reset) {
 		vgt->enabled_rings_before_reset &= ~ring_bitmap;
 
@@ -313,7 +314,10 @@ static bool gen6_gdrst_mmio_write(struct vgt_device *vgt, unsigned int offset,
 	uint32_t data = 0;
 	unsigned long ring_bitmap = 0;
 
+	printk("ZD: %s called\n", __func__);
 	memcpy(&data, p_data, bytes);
+	printk("ZD %s: data:%x offset:%u bytes:%u\n", __func__,
+		data, offset, bytes);
 
 	if (data & _REGBIT_GEN6_GRDOM_FULL) {
 		vgt_info("VM %d request Full GPU Reset\n", vgt->vm_id);
@@ -351,6 +355,7 @@ static bool gen6_gdrst_mmio_read(struct vgt_device *vgt, unsigned int offset,
 
 	*(u32 *)p_data = 0;
 
+	printk("ZD: %s called\n", __func__);
 	if (device_is_reseting(vgt->pdev) && vgt->vm_id == 0) {
 		v = VGT_MMIO_READ(vgt->pdev, offset);
 

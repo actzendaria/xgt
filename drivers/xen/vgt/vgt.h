@@ -357,7 +357,7 @@ typedef struct {
 	vgt_reg_t	last_scan_head;
 	uint64_t request_id;
 
-	vgt_reg_t uhptr;
+	vgt_reg_t uhptr;		/* ZD: what's this? */
 	uint64_t uhptr_id;
 } vgt_state_ring_t;
 

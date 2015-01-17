@@ -834,9 +834,12 @@ static void do_device_reset(struct pgt_device *pdev)
 
 	set_bit(WAIT_RESET, &vgt_dom0->reset_flags);
 
+	printk("ZD: i915_handle_error()\n");
 	i915_handle_error(drm_dev, true);
 
+	printk("ZD: i915_wait_error_work_complete()\n");
 	i915_wait_error_work_complete(drm_dev);
+	printk("ZD: i915_wait_error_work_complete() done.\n");
 
 	/*
 	 * User may set i915.reset=0 in kernel command line, which will
@@ -921,6 +924,7 @@ int vgt_reset_device(struct pgt_device *pdev)
 		return -EAGAIN;
 	}
 
+	printk("ZD %s: setting DEVICE_RESET_INPROGRESS\n", __func__);
 	if (test_and_set_bit(DEVICE_RESET_INPROGRESS,
 				&pdev->device_reset_flags)) {
 		vgt_err("Another device reset has been already running.\n");

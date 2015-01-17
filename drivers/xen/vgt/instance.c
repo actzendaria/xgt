@@ -494,6 +494,7 @@ static void vgt_reset_ppgtt(struct vgt_device *vgt, unsigned long ring_bitmap)
 {
 	int bit;
 
+	printk("ZD: %s triggered\n", __func__);
 	if (vgt->pdev->enable_ppgtt && vgt->ppgtt_initialized) {
 		if (ring_bitmap == 0xff) {
 			vgt_info("VM %d: Reset full virtual PPGTT state.\n", vgt->vm_id);
