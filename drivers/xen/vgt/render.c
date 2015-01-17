@@ -1613,6 +1613,10 @@ int vgt_ha_create_checkpoint(struct vgt_device *vgt)
 
 	if (dom0_vgt != vgt)
 		vgt_ha_save_gtt_gm(vgt);
+	if (vgt->ha.restore_request) {
+		vgt_err("XXH: restoring! why come into here?\n");
+		return 0;
+	}
 	vgt_ha_rendering_save_mmio(vgt);
 
 	for (i=0; i < pdev->max_engines; i++) {
@@ -1719,7 +1723,8 @@ bool vgt_ha_restore(struct vgt_device *vgt)
 	u64 cost;
 	int i;
 
-	vgt_info("XXH: ha restore start\n");
+	vgt_info("XXH: vgt %d ha restore start\n", vgt->vm_id);
+	vgt->ha.restore_request = 1;
 	t0 = vgt_get_cycles();
 	for (i=0; i < pdev->max_engines; i++) {
 		vgt_state_ring_t *rs = &vgt->rb[i];
@@ -1816,8 +1821,8 @@ bool vgt_do_render_context_switch(struct pgt_device *pdev)
 
 	if (prev->ha.enabled && prev->vm_id)
 		vgt_ha_create_checkpoint(prev);
-	if (prev->vm_id == 0 && next->ha.restore_request && next->ha.enabled)
-		vgt_ha_restore(next);
+	/*if (prev->vm_id == 0 && next->ha.restore_request && next->ha.enabled)
+		vgt_ha_restore(next);*/
 
 	/* STEP-1: manually save render context */
 	vgt_rendering_save_mmio(prev);
@@ -2063,8 +2068,8 @@ bool ring_mmio_write(struct vgt_device *vgt, unsigned int off,
 			vgt_scan_vring(vgt, ring_id);
 			
 		}
-		else
-			vgt_info("XXH ring %d ctl not enable\n", ring_id);
+		/*else
+			vgt_info("XXH ring %d ctl not enable\n", ring_id);*/
 
 		t1 = get_cycles();
 		stat->ring_tail_mmio_wcycles += (t1-t0);

@@ -274,7 +274,7 @@ static bool handle_device_reset(struct vgt_device *vgt, unsigned int offset,
 {
 	int bit;
 
-	vgt_info("VM %d is trying to reset device: %s.\n", vgt->vm_id,
+	vgt_info("XXH: VM %d is trying to reset device: %s.\n", vgt->vm_id,
 		ring_bitmap == 0xff ? "full reset" : "per-engine reset");
 
 	show_debug(vgt->pdev);
@@ -301,8 +301,10 @@ static bool handle_device_reset(struct vgt_device *vgt, unsigned int offset,
 
 	vgt->last_reset_time = get_seconds();
 
-	if (device_is_reseting(vgt->pdev) && vgt->vm_id == 0)
+	if (device_is_reseting(vgt->pdev) && vgt->vm_id == 0) {
+		vgt_info("XXH: goto default\n");
 		return default_mmio_write(vgt, offset, p_data, bytes);
+	}
 
 	return true;
 }

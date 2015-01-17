@@ -31,10 +31,13 @@
 #include <drm/intel-gtt.h>
 #include <asm/cacheflush.h>
 
+int debug_off = 1;
 void show_debug(struct pgt_device *pdev)
 {
 	int i, cpu;
 
+	if (debug_off)
+		return;
 	printk("========vGT DEBUG INFO==========\n");
 	for_each_online_cpu(cpu)
 		printk("CPU[%d]: %s\n", cpu,
@@ -59,6 +62,8 @@ void show_ring_debug(struct pgt_device *pdev, int ring_id)
 	vgt_reg_t reg;
 	int i;
 
+	if (debug_off)
+		return;
 	for (i = 0; i < VGT_MAX_VMS; i++) {
 		struct vgt_device *vgt;
 		if (pdev->device[i]) {
