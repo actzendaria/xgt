@@ -705,6 +705,8 @@ struct vgt_device {
 	uint8_t hvm_boot_foreground_visible:1;
 	uint8_t warn_untrack:1;
 	uint8_t bypass_addr_check:1;
+	/* stop ha when instance is supposed to be removed from render run queue */
+	uint8_t	force_disable_ha:1;
 
 	atomic_t crashing;
 

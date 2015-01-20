@@ -1819,7 +1819,7 @@ bool vgt_do_render_context_switch(struct pgt_device *pdev)
 			(t0 - prev->stat.schedule_in_time);
 	vgt_ctx_switch(pdev)++;
 
-	if (prev->ha.enabled && prev->vm_id)
+	if (prev->ha.enabled && prev->vm_id && !prev->force_disable_ha)
 		vgt_ha_create_checkpoint(prev);
 	/*if (prev->vm_id == 0 && next->ha.restore_request && next->ha.enabled)
 		vgt_ha_restore(next);*/
