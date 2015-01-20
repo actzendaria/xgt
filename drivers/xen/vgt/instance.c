@@ -335,7 +335,6 @@ int create_vgt_instance(struct pgt_device *pdev, struct vgt_device **ptr_vgt, vg
 		vgt->ha.saved_vgtt = vzalloc(vgt->vgtt_sz);
 		vgt->ha.saved_gm_size = (vgt->vgtt_sz / GTT_ENTRY_SIZE) << GTT_PAGE_SHIFT;
 		vgt->ha.saved_gm = vzalloc(vgt->ha.saved_gm_size);
-		hash_init((vgt->ha.saved_gp_table));
 		vgt_info("XXH: backup vgtt size %llx addr %llx gm size %llx addr %llx\n",
 				(unsigned long long)vgt->vgtt_sz, (unsigned long long)vgt->ha.saved_vgtt, (unsigned long long)vgt->ha.saved_gm_size, (unsigned long long)vgt->ha.saved_gm);
 		if (!vgt->ha.saved_vgtt || !vgt->ha.saved_gm)
@@ -362,7 +361,6 @@ err:
 	if (vgt->ha.checkpoint_thread)
 		kthread_stop(vgt->ha.checkpoint_thread);
 	if (vgt->vm_id != 0) {
-		vgt_clear_saved_gp_table(vgt, false);
 		if (vgt->ha.saved_vgtt)
 			vfree(vgt->ha.saved_vgtt);
 		if (vgt->ha.saved_gm)
@@ -394,7 +392,6 @@ void vgt_release_instance(struct vgt_device *vgt)
 	if (vgt->vm_id != 0) {
 		vgt->force_disable_ha = 1;
 		wmb();
-		vgt_clear_saved_gp_table(vgt, false);
 		vfree(vgt->ha.saved_gm);
 		vfree(vgt->ha.saved_vgtt);
 	}

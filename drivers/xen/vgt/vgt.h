@@ -381,29 +381,8 @@ struct vgt_wp_page_entry {
 	int idx;	/* shadow PTE index */
 };
 
-struct vgt_gpage_entry {
-	struct hlist_node hlist;
-	/* va(page pointer) translated by vgT_gma_to_va(gma) */
-	uint64_t va_addr;
-	/* the first (gpfn)index that points to va_addr(va page) */
-	uint32_t idx;
-	/* for debug or statistics*/
-	uint16_t count;
-	/* according to the current ha_save/restore_gm code,
-	    have to judge the region of an idx:
-	    0: low
-            1: high
-	 */
-	uint8_t high:1;
-	/* FIXME: We might not need a valid bit here?
-	 * valid bit:
-	 * 0: page is not saved
-	 * 1: page is saved in the corresponding snapshot memory space
-	 */
-	uint8_t valid:1;
-};
 #define	VGT_HASH_BITS	6
-#define	VGT_GMPAGE_HASH_BITS	30
+
 /*
  * Ring ID definition.
  */
@@ -447,7 +426,6 @@ struct pgt_device;
 
 extern bool idle_rendering_engines(struct pgt_device *pdev, int *id);
 extern bool idle_render_engine(struct pgt_device *pdev, int id);
-extern void vgt_clear_saved_gp_table(struct vgt_device *vgt, bool reset);
 extern bool vgt_ha_restore(struct vgt_device *vgt);
 extern bool vgt_do_render_context_switch(struct pgt_device *pdev);
 extern void vgt_destroy(void);
@@ -638,7 +616,6 @@ typedef struct {
 	int restore_request;
 	int saving;
 	bool enabled;
-	DECLARE_HASHTABLE(saved_gp_table, VGT_GMPAGE_HASH_BITS);
 	uint64_t saved_gm_size;
 	uint32_t *saved_gm;
 	uint32_t *saved_vgtt;
