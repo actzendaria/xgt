@@ -102,6 +102,7 @@ enum vgt_debugfs_entry_t
 	VGT_DEBUGFS_FB_FORMAT,
 	VGT_DEBUGFS_DPY_INFO,
 	VGT_DEBUGFS_HA_CP,
+	VGT_DEBUGFS_GTT,
 	VGT_DEBUGFS_ENTRY_MAX
 };
 
@@ -1055,6 +1056,19 @@ int vgt_create_debugfs(struct vgt_device *vgt)
 	else
 		printk("vGT(%d): create debugfs node: ha_checkpoint\n", vgt_id);
 
+	/* GTT table dump */
+	p = &vgt_debugfs_data[vgt_id][VGT_DEBUGFS_GTT];
+	p->array = (u32 *)(vgt->vgtt);
+	p->elements = vgt->vgtt_sz >> sizeof(u32);
+	d_debugfs_entry[vgt_id][VGT_DEBUGFS_GTT] = vgt_debugfs_create_blob("gtt_space",
+			0444,
+			d_per_vgt[vgt_id],
+			p);
+
+	if (!d_debugfs_entry[vgt_id][VGT_DEBUGFS_GTT])
+		printk(KERN_ERR "vGT(%d): failed to create debugfs node: gtt_space\n", vgt_id);
+	else
+		printk("vGT(%d): create debugfs node: gtt_space\n", vgt_id);
 
 	/* perf vm perfermance statistics */
 	perf_dir_entry = debugfs_create_dir("perf", d_per_vgt[vgt_id]);

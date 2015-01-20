@@ -1550,6 +1550,70 @@ static void dump_regs_on_err(struct pgt_device *pdev)
 
 extern struct vgt_device *dom0_vgt;
 
+void vgt_add_gpage_entry(struct vgt_device *vgt, struct vgt_gpage_entry *e) {
+	hash_add((vgt->ha.saved_gp_table), &e->hlist, e->va_addr);
+}
+
+struct vgt_gpage_entry* vgt_find_gpage_entry(struct vgt_device *vgt, void *va_addr)
+{
+	struct vgt_gpage_entry *e;
+	/*FIXME: va_addr should be page aligned, mask it later*/
+	uint64_t key;
+
+	key = (uint64_t)va_addr;
+	hash_for_each_possible((vgt->ha.saved_gp_table), e, hlist, key) {
+		if (key == e->va_addr)
+			return e;
+	}
+	return NULL;
+}
+
+void vgt_del_gpage_entry(struct vgt_device *vgt, void *va_addr)
+{
+	struct vgt_gpage_entry *e;
+	/*FIXME: va_addr should be page aligned, mask it later*/
+	void *key;
+
+	key = va_addr;
+	if ((e = vgt_find_gpage_entry(vgt, key))) {
+		hash_del(&e->hlist);
+		kfree(e);
+	}
+}
+
+void vgt_clear_saved_gp_table(struct vgt_device *vgt, bool reset)
+{
+	int i;
+	struct hlist_node *tmp;
+	struct vgt_gpage_entry *e;
+
+	hash_for_each_safe((vgt->ha.saved_gp_table), i, tmp, e, hlist)
+		kfree(e);
+
+	if (reset)
+		hash_init((vgt->ha.saved_gp_table));
+}
+
+void vgt_show_saved_gp_table_info(struct vgt_device *vgt)
+{
+	int i = 0, total_ents = 0, total_cnt = 0, thres = 1;
+	struct hlist_node *tmp;
+	struct vgt_gpage_entry *e;
+
+	printk("------saved_gp_table------\n");
+	hash_for_each_safe((vgt->ha.saved_gp_table), i, tmp, e, hlist) {
+		total_ents++;
+		if (e->count > thres) {
+			printk("VA:%llu\tIDX:(%s)%lu\tcount:%u\n",
+				e->va_addr, e->high?"HIGH":"LOW",
+				(unsigned long)e->idx,
+				(unsigned int)e->count);
+		}
+		total_cnt += (int)e->count;
+	}
+	printk("ZD: gp_table total entries: %d\tpage count:%d\n", total_ents, total_cnt);
+}
+
 int vgt_ha_restore_gtt_gm(struct vgt_device *vgt)
 {
 	uint32_t i, low_frame_cnt;
@@ -1584,24 +1648,68 @@ int vgt_ha_save_gtt_gm(struct vgt_device *vgt)
 	u64 cost, gma, low_base = vgt_visible_gm_base(vgt), high_base = vgt_hidden_gm_base(vgt);
 	void *va;
 	cycles_t t0, t1;
+	struct vgt_gpage_entry* gpe;
 
 	t0 = vgt_get_cycles();
+	/* clean (and free entries) for the stale gpage hashtable */
+	vgt_clear_saved_gp_table(vgt, true);
 	memcpy(vgt->ha.saved_vgtt, vgt->vgtt, vgt->vgtt_sz);
 	low_frame_cnt = vgt_aperture_sz(vgt) >> PAGE_SHIFT;
 	for (i = 0; i < low_frame_cnt; i++)
 	{
+		gpe = NULL;
 		gma = low_base + (i << PAGE_SHIFT);
 		va = vgt_gma_to_va(vgt, gma, false);
+
+		gpe = vgt_find_gpage_entry(vgt, va);
+		if (gpe)
+			gpe->count++;
+		else {
+			/* Add gpage record in hashtable */
+			gpe = kmalloc(sizeof(*gpe), GFP_ATOMIC);
+			if (!gpe) {
+				vgt_err("%s: out of memory!\n", __func__);
+				/* FIXME: inform the invoker that gm snapshot failed! */
+				return -ENOMEM;
+			}
+			gpe->va_addr = (uint64_t)va;
+			gpe->idx = i;
+			gpe->count = 1;
+			gpe->high = 0;
+			gpe->valid = 1;
+			vgt_add_gpage_entry(vgt, gpe);
+		}
 		memcpy((char *)vgt->ha.saved_gm + (i << PAGE_SHIFT), va, 1 << PAGE_SHIFT);
 	}
 	for (i = 0; i <  vgt_hidden_gm_sz(vgt) >> PAGE_SHIFT; i++)
 	{
+		gpe = NULL;
 		gma = high_base + (i << PAGE_SHIFT);
 		va = vgt_gma_to_va(vgt, gma, false);
+
+		gpe = vgt_find_gpage_entry(vgt, va);
+		if (gpe)
+			gpe->count++;
+		else {
+			/* Add gpage record in hashtable */
+			gpe = kmalloc(sizeof(*gpe), GFP_ATOMIC);
+			if (!gpe) {
+				vgt_err("%s: out of memory!\n", __func__);
+				/* FIXME: inform the invoker that gm snapshot failed! */
+				return -ENOMEM;
+			}
+			gpe->va_addr = (uint64_t)va;
+			gpe->idx = i;
+			gpe->count = 1;
+			gpe->high = 1;
+			gpe->valid = 1;
+			vgt_add_gpage_entry(vgt, gpe);
+		}
 		memcpy((char *)vgt->ha.saved_gm + ((low_frame_cnt + i) << PAGE_SHIFT), va, 1 << PAGE_SHIFT);
 	}
 	t1 = vgt_get_cycles();
 	cost = t1 - t0;
+	vgt_show_saved_gp_table_info(vgt);
 	printk("XXH save gm cost %lld\n", cost);
 	return 0;
 }
