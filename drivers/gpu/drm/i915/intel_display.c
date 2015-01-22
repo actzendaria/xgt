@@ -2040,6 +2040,7 @@ static int i9xx_update_plane(struct drm_crtc *crtc, struct drm_framebuffer *fb,
 	u32 dspcntr;
 	u32 reg;
 
+	dump_stack();
 	printk("ironlake_update_plane\n");
 	switch (plane) {
 	case 0:

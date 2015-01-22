@@ -485,45 +485,6 @@ vgt_reg_t vgt_gen7_render_regs[] = {
 	0xb038,
 };
 
-static void __vgt_rendering_save(struct vgt_device *vgt, int num, vgt_reg_t *regs)
-{
-	vgt_reg_t	*sreg, *vreg;	/* shadow regs */
-	int i;
-
-	sreg = vgt->state.sReg;
-	vreg = vgt->state.vReg;
-
-	for (i=0; i<num; i++) {
-		int reg = regs[i];
-		//if (reg_hw_status(vgt->pdev, reg)) {
-		/* FIXME: only hw update reg needs save */
-		if (!reg_mode_ctl(vgt->pdev, reg))
-		{
-			__sreg(vgt, reg) = VGT_MMIO_READ(vgt->pdev, reg);
-			__vreg(vgt, reg) = mmio_h2g_gmadr(vgt, reg, __sreg(vgt, reg));
-			vgt_dbg(VGT_DBG_RENDER, "....save mmio (%x) with (%x)\n", reg, __sreg(vgt, reg));
-		}
-	}
-}
-
-/* For save/restore global states difference between VMs.
- * Other context states should be covered by normal context switch later. */
-static void vgt_rendering_save_mmio(struct vgt_device *vgt)
-{
-	struct pgt_device *pdev = vgt->pdev;
-
-	/*
-	 * both save/restore refer to the same array, so it's
-	 * enough to track only save part
-	 */
-	pdev->in_ctx_switch = 1;
-	if (IS_SNB(pdev))
-		__vgt_rendering_save(vgt, ARRAY_NUM(vgt_render_regs), &vgt_render_regs[0]);
-	else if (IS_IVB(pdev) || IS_HSW(pdev))
-		__vgt_rendering_save(vgt, ARRAY_NUM(vgt_gen7_render_regs), &vgt_gen7_render_regs[0]);
-	pdev->in_ctx_switch = 0;
-}
-
 static void __vgt_ha_rendering_save(struct vgt_device *vgt, int num, vgt_reg_t *regs)
 {
 	vgt_reg_t	*sreg, *vreg;	/* shadow regs */
@@ -560,6 +521,48 @@ static void vgt_ha_rendering_save_mmio(struct vgt_device *vgt)
 		__vgt_ha_rendering_save(vgt, ARRAY_NUM(vgt_render_regs), &vgt_render_regs[0]);
 	else if (IS_IVB(pdev) || IS_HSW(pdev))
 		__vgt_ha_rendering_save(vgt, ARRAY_NUM(vgt_gen7_render_regs), &vgt_gen7_render_regs[0]);
+	pdev->in_ctx_switch = 0;
+}
+
+static void __vgt_rendering_save(struct vgt_device *vgt, int num, vgt_reg_t *regs)
+{
+	vgt_reg_t	*sreg, *vreg;	/* shadow regs */
+	int i;
+
+	sreg = vgt->state.sReg;
+	vreg = vgt->state.vReg;
+
+	for (i=0; i<num; i++) {
+		int reg = regs[i];
+		//if (reg_hw_status(vgt->pdev, reg)) {
+		/* FIXME: only hw update reg needs save */
+		if (!reg_mode_ctl(vgt->pdev, reg))
+		{
+			__sreg(vgt, reg) = VGT_MMIO_READ(vgt->pdev, reg);
+			__vreg(vgt, reg) = mmio_h2g_gmadr(vgt, reg, __sreg(vgt, reg));
+			vgt_dbg(VGT_DBG_RENDER, "....save mmio (%x) with (%x)\n", reg, __sreg(vgt, reg));
+		}
+	}
+}
+
+/* For save/restore global states difference between VMs.
+ * Other context states should be covered by normal context switch later. */
+static void vgt_rendering_save_mmio(struct vgt_device *vgt)
+{
+	struct pgt_device *pdev = vgt->pdev;
+
+	/*
+	 * both save/restore refer to the same array, so it's
+	 * enough to track only save part
+	 */
+	pdev->in_ctx_switch = 1;
+	if (IS_SNB(pdev))
+		__vgt_rendering_save(vgt, ARRAY_NUM(vgt_render_regs), &vgt_render_regs[0]);
+	else if (IS_IVB(pdev) || IS_HSW(pdev))
+		__vgt_rendering_save(vgt, ARRAY_NUM(vgt_gen7_render_regs), &vgt_gen7_render_regs[0]);
+	if (vgt->ha.enabled && vgt->vm_id && !vgt->force_disable_ha) {
+		vgt_ha_rendering_save_mmio(vgt);
+	}
 	pdev->in_ctx_switch = 0;
 }
 
@@ -1713,7 +1716,8 @@ void print_ring_state(vgt_state_ring_t *rs)
 		cmd_nr += entry->cmd_nr;
 	}
 
-	printk("XXH: cmd_nr %d head %d tail %d\n", cmd_nr, list->head, list->tail);
+	printk("XXH: cmd_nr %d taillist head %d tail %d\n", cmd_nr, list->head, list->tail);
+	printk("XXH: head %x tail %x\n", rs->sring.head, rs->sring.tail);
 }
 
 bool vgt_ha_restore(struct vgt_device *vgt)
@@ -1726,21 +1730,22 @@ bool vgt_ha_restore(struct vgt_device *vgt)
 	vgt_info("XXH: vgt %d ha restore start\n", vgt->vm_id);
 	vgt->ha.restore_request = 1;
 	t0 = vgt_get_cycles();
-	for (i=0; i < pdev->max_engines; i++) {
-		vgt_state_ring_t *rs = &vgt->rb[i];
-		vgt_state_ring_t *rb = &vgt->rb_cp[i];
-		/*if (i == 0) {
-			printk("XXH ring %d now:\n", i);
-			print_ring_state(rs);
-			printk("XXH ring %d saved:\n", i);
-			print_ring_state(rb);
-			goto err;
-		}*/
+	for (i = 0; i < pdev->max_engines; i++) {
+		vgt_state_ring_t *rb = &vgt->rb[i];
+		vgt_state_ring_t *rb_cp = &vgt->rb_cp[i];
 
-		memcpy(rs, rb, sizeof(vgt_state_ring_t));
+		/*printk("XXH: ring %d now: head %x\n", i, VGT_READ_HEAD(pdev, i));
+		print_ring_state(rb);
+		printk("XXH: ring %d saved:\n", i);
+		print_ring_state(rb_cp);*/
+
+		memcpy(rb, rb_cp, sizeof(vgt_state_ring_t));
 	}
-	vgt_ha_rendering_restore_mmio(vgt);
 	vgt_ha_restore_gtt_gm(vgt);
+	vgt_ha_rendering_restore_mmio(vgt);
+	for (i=0; i < pdev->max_engines; i++) {
+		printk("XXH: ring %d now: head %x\n", i, VGT_READ_HEAD(pdev, i));
+	}
 	vgt->ha.restore_request = 0;
 	t1 = vgt_get_cycles();
 	cost = t1 - t0;
@@ -1819,10 +1824,17 @@ bool vgt_do_render_context_switch(struct pgt_device *pdev)
 			(t0 - prev->stat.schedule_in_time);
 	vgt_ctx_switch(pdev)++;
 
-	if (prev->ha.enabled && prev->vm_id && !prev->force_disable_ha)
+	/*if (prev->ha.enabled && prev->vm_id && !prev->force_disable_ha) {
 		vgt_ha_create_checkpoint(prev);
-	/*if (prev->vm_id == 0 && next->ha.restore_request && next->ha.enabled)
-		vgt_ha_restore(next);*/
+	}*/
+	if (prev->vm_id == 0 && next->ha.restore_request && next->ha.enabled && !next->force_disable_ha) {
+		if (!vgt_ha_restore(next)) {
+			next->ha.restore_request = 0;
+			vgt_info("restore succ!\n");
+		}
+		else
+			vgt_info("restore fail!\n");
+	}
 
 	/* STEP-1: manually save render context */
 	vgt_rendering_save_mmio(prev);
@@ -1830,9 +1842,12 @@ bool vgt_do_render_context_switch(struct pgt_device *pdev)
 	/* STEP-2: HW render context switch */
 	for (i=0; i < pdev->max_engines; i++) {
 		struct vgt_rsvd_ring *ring = &pdev->ring_buffer[i];
+		vgt_state_ring_t *rb = &prev->rb[i];
+		vgt_state_ring_t *rb_cp = &prev->rb_cp[i];
+
 
 		if (!ring->need_switch)
-			continue;
+			goto loopout;
 
 		/* STEP-2a: stop the ring */
 		if (!stop_ring(pdev, i)) {
@@ -1844,7 +1859,7 @@ bool vgt_do_render_context_switch(struct pgt_device *pdev)
 		vgt_save_ringbuffer(prev, i);
 
 		if (ring->stateless)
-			continue;
+			goto loopout;
 
 		/* STEP-2c: switch to vGT ring buffer */
 		if (!vgt_setup_rsvd_ring(ring)) {
@@ -1881,6 +1896,17 @@ bool vgt_do_render_context_switch(struct pgt_device *pdev)
 			vgt_err("Fail to stop ring (2nd)\n");
 			goto err;
 		}
+loopout:
+		if (prev->ha.enabled && prev->vm_id && !prev->force_disable_ha) {
+			memcpy(rb_cp, rb, sizeof(vgt_state_ring_t));
+			/*printk("XXH: ring %d need_switch %d stateless %d\n", i, ring->need_switch, ring->stateless);
+			printk("XXH: rb sring.head %x active_vm_ctx %x\n", rb->sring.head, rb->active_vm_context);
+			printk("XXH: rb_cp sring.head %x active_vm_ctx %x\n", rb_cp->sring.head, rb_cp->active_vm_context);*/
+		}
+	}
+
+	if (prev->ha.enabled && prev->vm_id && !prev->force_disable_ha) {
+		vgt_ha_save_gtt_gm(prev);
 	}
 
 	/* STEP-3: manually restore render context */
@@ -2085,8 +2111,9 @@ bool ring_mmio_write(struct vgt_device *vgt, unsigned int off,
 		} else {
 			if (sring->tail &&
 					!test_and_set_bit(ring_id, (void *)vgt->started_rings))
-				printk("Ring-%d starts work for vgt-%d\n",
-						ring_id, vgt->vgt_id);
+				dump_stack();
+				/*printk("Ring-%d starts work for vgt-%d\n",
+						ring_id, vgt->vgt_id);*/
 		}
 
 		break;

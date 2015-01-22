@@ -970,7 +970,7 @@ int vgt_reset_device(struct pgt_device *pdev)
 
 	do_device_reset(pdev);
 
-	for (i = 0; i < VGT_MAX_VMS; i++) {
+	/*for (i = 0; i < VGT_MAX_VMS; i++) {
 		vgt = pdev->device[i];
 		if (vgt && vgt->vm_id && vgt->ha.enabled
 			&& !vgt->force_disable_ha) {
@@ -978,7 +978,7 @@ int vgt_reset_device(struct pgt_device *pdev)
 				vgt_err("XXH: restore failed!\n");
 			}
 		}
-	}
+	}*/
 
 	vgt_info("Restart VGT context switch.\n");
 
