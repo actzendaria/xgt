@@ -1555,25 +1555,25 @@ extern struct vgt_device *dom0_vgt;
 
 int vgt_ha_restore_gtt_gm(struct vgt_device *vgt)
 {
-	uint32_t i, low_frame_cnt;
+	uint32_t i, j, low_frame_cnt;
 	u64 cost, gma, low_base = vgt_visible_gm_base(vgt), high_base = vgt_hidden_gm_base(vgt);
 	void *va;
 	cycles_t t0, t1;
 
 	t0 = vgt_get_cycles();
 	memcpy(vgt->vgtt, vgt->ha.saved_vgtt, vgt->vgtt_sz);
-	for (i = 0; i < vgt_aperture_sz(vgt) >> PAGE_SHIFT; i++)
+	for (i = 0, j = 0; i < vgt_aperture_sz(vgt) >> PAGE_SHIFT; i++, j++)
 	{
 		gma = low_base + (i << PAGE_SHIFT);
 		va = vgt_gma_to_va(vgt, gma, false);
-		memcpy(va, (char *)vgt->ha.saved_gm + (i << PAGE_SHIFT), 1 << PAGE_SHIFT);
+		memcpy(va, (char *)vgt->ha.saved_gm + (j << PAGE_SHIFT), 1 << PAGE_SHIFT);
 	}
 	low_frame_cnt = vgt_aperture_sz(vgt) >> PAGE_SHIFT;
-	for (i = 0; i <  vgt_hidden_gm_sz(vgt) >> PAGE_SHIFT; i++)
+	for (i = 0; i <  vgt_hidden_gm_sz(vgt) >> PAGE_SHIFT; i++, j++)
 	{
 		gma = high_base + (i << PAGE_SHIFT);
 		va = vgt_gma_to_va(vgt, gma, false);
-		memcpy(va, (char *)vgt->ha.saved_gm + ((low_frame_cnt + i) << PAGE_SHIFT), 1 << PAGE_SHIFT);
+		memcpy(va, (char *)vgt->ha.saved_gm + (j << PAGE_SHIFT), 1 << PAGE_SHIFT);
 	}
 	t1 = vgt_get_cycles();
 	cost = t1 - t0;
@@ -1583,7 +1583,7 @@ int vgt_ha_restore_gtt_gm(struct vgt_device *vgt)
 
 int vgt_ha_save_gtt_gm(struct vgt_device *vgt)
 {
-	uint32_t i, low_frame_cnt;
+	uint32_t i, j, low_frame_cnt;
 	u64 cost, gma, low_base = vgt_visible_gm_base(vgt), high_base = vgt_hidden_gm_base(vgt);
 	void *va;
 	cycles_t t0, t1;
@@ -1591,17 +1591,29 @@ int vgt_ha_save_gtt_gm(struct vgt_device *vgt)
 	t0 = vgt_get_cycles();
 	memcpy(vgt->ha.saved_vgtt, vgt->vgtt, vgt->vgtt_sz);
 	low_frame_cnt = vgt_aperture_sz(vgt) >> PAGE_SHIFT;
-	for (i = 0; i < low_frame_cnt; i++)
+	printk("ZD: save GM low pages:%u high_pages:%u\n",
+		(unsigned int)low_frame_cnt, (unsigned int)vgt_hidden_gm_sz(vgt) >> PAGE_SHIFT);
+	for (i = 0, j = 0; i < low_frame_cnt; i++, j++)
 	{
 		gma = low_base + (i << PAGE_SHIFT);
+		if (!g_gmpage_is_valid(vgt, gma)) {
+			printk("ZD: VM(%d) Page 0x%llu is not valid!\n",
+				vgt->vm_id, (unsigned long long)gma);
+			continue;
+		}
 		va = vgt_gma_to_va(vgt, gma, false);
-		memcpy((char *)vgt->ha.saved_gm + (i << PAGE_SHIFT), va, 1 << PAGE_SHIFT);
+		memcpy((char *)vgt->ha.saved_gm + (j << PAGE_SHIFT), va, 1 << PAGE_SHIFT);
 	}
-	for (i = 0; i <  vgt_hidden_gm_sz(vgt) >> PAGE_SHIFT; i++)
+	for (i = 0; i <  vgt_hidden_gm_sz(vgt) >> PAGE_SHIFT; i++, j++)
 	{
 		gma = high_base + (i << PAGE_SHIFT);
+		if (!g_gmpage_is_valid(vgt, gma)) {
+			printk("ZD: VM(%d) Page 0x%llu is not valid!\n",
+				vgt->vm_id, (unsigned long long)gma);
+			continue;
+		}
 		va = vgt_gma_to_va(vgt, gma, false);
-		memcpy((char *)vgt->ha.saved_gm + ((low_frame_cnt + i) << PAGE_SHIFT), va, 1 << PAGE_SHIFT);
+		memcpy((char *)vgt->ha.saved_gm + (j << PAGE_SHIFT), va, 1 << PAGE_SHIFT);
 	}
 	t1 = vgt_get_cycles();
 	cost = t1 - t0;

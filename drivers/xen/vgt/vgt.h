@@ -1545,6 +1545,14 @@ static inline bool g_gm_is_valid(struct vgt_device *vgt, uint64_t g_addr)
 	return g_gm_is_visible(vgt, g_addr) || g_gm_is_hidden(vgt, g_addr);
 }
 
+static inline bool g_gmpage_is_valid(struct vgt_device *vgt, uint64_t g_addr)
+{
+	uint64_t g_first, g_last;
+	g_first = g_addr & PAGE_MASK;
+	g_last = g_first + (1ULL << PAGE_SHIFT) - 1ULL;
+	return g_gm_is_valid(vgt, g_first) && g_gm_is_valid(vgt, g_last);
+}
+
 /* check whether a host GM address is within the CPU visible range */
 static inline bool h_gm_is_visible(struct vgt_device *vgt, uint64_t h_addr)
 {
