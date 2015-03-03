@@ -610,8 +610,13 @@ struct gt_port {
 	enum vgt_port physcal_port;
 };
 
+/* request types to wake up per-vgt ha_checkpoint thread */
+#define VGT_HA_REQ_CREATE	0	/* create a single checkpoint */
+#define VGT_HA_REQ_RESTORE	1
+
 typedef struct {
 	int checkpoint_id;
+	int request;
 	int checkpoint_request;
 	int restore_request;
 	int saving;
@@ -620,6 +625,7 @@ typedef struct {
 	uint32_t *saved_gm;
 	uint32_t *saved_vgtt;
 	struct task_struct *checkpoint_thread;
+	wait_queue_head_t event_wq;
 } vgt_ha_t;
 
 struct vgt_device {
@@ -1204,6 +1210,13 @@ static inline void vgt_raise_request(struct pgt_device *pdev, uint32_t flag)
 	set_bit(flag, (void *)&pdev->request);
 	if (waitqueue_active(&pdev->event_wq))
 		wake_up(&pdev->event_wq);
+}
+
+static inline void vgt_raise_ha_request(struct vgt_device *vgt, uint32_t flag)
+{
+	set_bit(flag, (void *)&vgt->ha.request);
+	if (waitqueue_active(&vgt->ha.event_wq))
+		wake_up(&vgt->ha.event_wq);
 }
 
 static inline bool vgt_chk_raised_request(struct pgt_device *pdev, uint32_t flag)

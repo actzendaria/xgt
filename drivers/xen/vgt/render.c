@@ -25,6 +25,7 @@
 
 #include <linux/module.h>
 #include <linux/kthread.h>
+#include <linux/freezer.h>
 #include <linux/delay.h>
 #include <xen/interface/vcpu.h>
 #include <xen/interface/hvm/hvm_op.h>
@@ -1553,6 +1554,86 @@ static void dump_regs_on_err(struct pgt_device *pdev)
 
 extern struct vgt_device *dom0_vgt;
 
+static bool vgt_ha_save_hw_context(int id, struct vgt_device *vgt)
+{
+	struct pgt_device *pdev = vgt->pdev;
+	vgt_state_ring_t *rb = &vgt->rb_cp[id];
+	struct vgt_rsvd_ring *ring = &pdev->ring_buffer[id];
+	//vgt_reg_t	ccid, new_ccid;
+
+	/* pipeline flush */
+	vgt_ring_emit(ring, PIPE_CONTROL(5));
+	vgt_ring_emit(ring, PIPE_CONTROL_CS_STALL |
+			    PIPE_CONTROL_TLB_INVALIDATE |
+			    PIPE_CONTROL_FLUSH_ENABLE);
+	vgt_ring_emit(ring, 0);
+	vgt_ring_emit(ring, 0);
+	vgt_ring_emit(ring, 0);
+
+	vgt_ring_emit(ring, PIPE_CONTROL(5));
+	vgt_ring_emit(ring, PIPE_CONTROL_RENDER_TARGET_CACHE_FLUSH |
+			    PIPE_CONTROL_FLUSH_ENABLE |
+			    PIPE_CONTROL_VF_CACHE_INVALIDATE |
+			    PIPE_CONTROL_CONST_CACHE_INVALIDATE |
+			    PIPE_CONTROL_STATE_CACHE_INVALIDATE);
+	vgt_ring_emit(ring, 0);
+	vgt_ring_emit(ring, 0);
+	vgt_ring_emit(ring, 0);
+
+	/* FIXME: too many CCID changes looks not working. So
+	 * fall back to original style by using guest context directly
+	 */
+	if (vgt->has_context) {
+		rb->active_vm_context = VGT_MMIO_READ(pdev, _REG_CCID);
+		rb->active_vm_context &= 0xfffff000;
+	}
+
+	vgt_ring_emit(ring, MI_ARB_ON_OFF | MI_ARB_DISABLE);
+	vgt_ring_emit(ring, MI_SET_CONTEXT);
+	vgt_ring_emit(ring, rb->context_save_area |
+			    MI_RESTORE_INHIBIT |
+			    MI_SAVE_EXT_STATE_EN |
+			    MI_RESTORE_EXT_STATE_EN);
+	vgt_ring_emit(ring, MI_NOOP);
+	vgt_ring_emit(ring, MI_ARB_ON_OFF | MI_ARB_ENABLE);
+
+	/* pipeline flush */
+	vgt_ring_emit(ring, PIPE_CONTROL(5));
+	vgt_ring_emit(ring, PIPE_CONTROL_CS_STALL |
+			    PIPE_CONTROL_TLB_INVALIDATE |
+			    PIPE_CONTROL_FLUSH_ENABLE |
+			    PIPE_CONTROL_MEDIA_STATE_CLEAR |
+			    PIPE_CONTROL_DC_FLUSH_ENABLE |
+			    PIPE_CONTROL_RENDER_TARGET_CACHE_FLUSH |
+			    PIPE_CONTROL_POST_SYNC_IMM |
+			    PIPE_CONTROL_POST_SYNC_GLOBAL_GTT);
+	vgt_ring_emit(ring, vgt_data_ctx_magic(pdev));
+	vgt_ring_emit(ring, ++pdev->magic);
+	vgt_ring_emit(ring, 0);
+
+	vgt_ring_emit(ring, MI_NOOP);
+	vgt_ring_emit(ring, MI_NOOP);
+	vgt_ring_emit(ring, MI_NOOP);
+
+	/* submit cmds */
+	vgt_ring_advance(ring);
+
+	if (!ring_wait_for_completion(pdev, id)) {
+		vgt_err("ha_create_checkpoint(): save context commands unfinished\n");
+		return false;
+	}
+
+#if 0
+	ccid = VGT_MMIO_READ (pdev, _REG_CCID);
+	new_ccid = rb->context_save_area;
+	if ((ccid & GTT_PAGE_MASK) != (new_ccid & GTT_PAGE_MASK)) {
+		vgt_err("vGT: CCID isn't changed [%x, %lx]\n", ccid, (unsigned long)new_ccid);
+		return false;
+	}
+#endif
+	return true;
+}
+
 int vgt_ha_restore_gtt_gm(struct vgt_device *vgt)
 {
 	uint32_t i, j, low_frame_cnt;
@@ -1626,21 +1707,67 @@ int vgt_ha_create_checkpoint(struct vgt_device *vgt)
 	struct pgt_device *pdev = vgt->pdev;
 	int i;
 
-	if (dom0_vgt != vgt)
-		vgt_ha_save_gtt_gm(vgt);
-	if (vgt->ha.restore_request) {
-		vgt_err("XXH: restoring! why come into here?\n");
-		return 0;
+	ASSERT(spin_is_locked(&pdev->lock));
+	if (current_render_owner(pdev) != vgt) {
+		vgt_warn("vgt_ha_create_checkpoint() failed: target is not render owner\n");
+		return -1;
 	}
+
+	//if (dom0_vgt != vgt)
+	//	vgt_ha_save_gtt_gm(vgt);
+	//vgt_ha_rendering_save_mmio(vgt);
+	if (!idle_rendering_engines(pdev, &i)) {
+		int j;
+		vgt_err("vGT: (idle rings in ha_create_checkpoint(VM-%d))...ring(%d) is busy\n",
+				current_render_owner(pdev)->vgt_id, i);
+		for (j = 0; j < 10; j++)
+			printk("pHEAD(%x), pTAIL(%x)\n",
+					VGT_READ_HEAD(pdev, i),
+					VGT_READ_TAIL(pdev, i));
+		goto err;
+	}
+	/* STEP-1: manually save render context */
 	vgt_ha_rendering_save_mmio(vgt);
 
+	/* STEP-2: HW render context switch */
 	for (i=0; i < pdev->max_engines; i++) {
 		struct vgt_rsvd_ring *ring = &pdev->ring_buffer[i];
-		vgt_state_ring_t *rs = &vgt->rb[i];
-		vgt_state_ring_t *rb = &vgt->rb_cp[i];
+		//vgt_state_ring_t *rb = &vgt->rb[i];
+		vgt_state_ring_t *rb_cp = &vgt->rb_cp[i];
 
 		if (!ring->need_switch)
 			continue;
+
+		/* STEP-2a: stop the ring */
+		if (!stop_ring(pdev, i)) {
+			vgt_err("vgt_ha_create_checkpoint(): Fail to stop ring (1st)\n");
+			goto err;
+		}
+
+		/* STEP-2b: save current ring buffer structure */
+		/* only head is HW updated */
+		rb_cp->sring.head = VGT_READ_HEAD(pdev, i);
+		rb_cp->vring.head = rb_cp->sring.head;
+
+		if (ring->stateless)
+			continue;
+
+		/* STEP-2c: switch to vGT ring buffer */
+		if (!vgt_setup_rsvd_ring(ring)) {
+			vgt_err("vgt_ha_create_checkpoint(): Fail to setup rsvd ring\n");
+			goto err;
+		}
+
+		start_ring(pdev, i);
+
+		/* STEP-2d: save HW render context for target vgt */
+		if (!vgt_ha_save_hw_context(i, vgt)) {
+			vgt_err("vgt_ha_create_checkpoint(): Fail to save context\n");
+			goto err;
+		}
+		vgt_info("vgt_ha_create_checkpoint(): Ring-%d save done.\n", i);
+
+#if 0
 		memcpy(rb, rs, sizeof(vgt_state_ring_t));
 		/* save current ring buffer structure */
 		rb->sring.head = VGT_READ_HEAD(pdev, i);
@@ -1654,59 +1781,83 @@ int vgt_ha_create_checkpoint(struct vgt_device *vgt)
 			rb->active_vm_context = VGT_MMIO_READ(pdev, _REG_CCID);
 			rb->active_vm_context &= 0xfffff000;
 		}
+#endif
+		vgt_info("vgt_ha_create_checkpoint(): Ring-%d save done.\n", i);
 	}
+
+	vgt_info("vgt_ha_create_checkpoint(): Create Success.\n");
 	return 0;
+err:
+	dump_regs_on_err(pdev);
+	/* TODO: any cleanup for context switch errors? */
+	vgt_err("FAIL on ring-%d\n", i);
+	show_ring_debug(pdev, i);
+	show_ringbuffer(pdev, i, 16 * sizeof(vgt_reg_t));
+	/*
+	 * put this after the ASSERT(). When ASSERT() tries to dump more
+	 * CPU/GPU states: we want to hold the lock to prevent other
+	 * vcpus' vGT related codes at this time.
+	 */
+	return -1;
 }
 
+/*
+ * The thread to perform the VGT checkpoint.
+ *
+ * See vgt_thread() for race conditions, we use the same global spinlock
+ * here to protect vreg/sreg/hwreg.
+ */
 int vgt_ha_checkpoint_thread(void *priv)
 {
 	struct vgt_device *vgt = (struct vgt_device *)priv;
 	struct pgt_device *pdev = vgt->pdev;
-	struct vgt_device *now;
-	u64 wait_idle;
-	cycles_t t0, t1;
-	int i, cpu;
+	//struct vgt_device *now;
+	//u64 wait_idle;
+	//cycles_t t0, t1;
+	int ret;
+	int cpu;
 
+	printk("vGT: start ha_checkpoint kthread for dev (%x, %x)\n", pdev->bus, pdev->devfn);
+
+	set_freezable();
 	vgt->ha.checkpoint_id = 0;
 	vgt->ha.checkpoint_request = 0;
 	vgt->ha.saving = 0;
 	vgt->ha.enabled = false;
-	while (true)
-	{
-		msleep(15);
-		if (kthread_should_stop())
-			return 0;
-		if (vgt->ha.checkpoint_request == 0)
-			continue;
-		now = current_render_owner(pdev);
-		if (now != vgt) {
-			vgt_info("XXH: now != vgt\n");
-			vgt->ha.checkpoint_request = 0;
+	while (!kthread_should_stop()) {
+		ret = wait_event_interruptible(vgt->ha.event_wq,
+			vgt->ha.request || freezing(current));
+		if (ret)
+			vgt_warn("ha_checkpoint thread-%d waken up by unexpected signal!\n", vgt->vm_id);
+
+		if (!vgt->ha.request && !freezing(current)) {
+			vgt_warn("ha_checkpoint thread-%d waken up by unknown reasons!\n", vgt->vm_id);
 			continue;
 		}
-		vgt_lock_dev(pdev, cpu);
-		vgt->ha.saving = 1;
-		vgt->ha.checkpoint_id++;
-		vgt_info("XXH create cp %d\n", vgt->ha.checkpoint_id);
-		t0 = vgt_get_cycles();
-		if (!idle_rendering_engines(pdev, &i)) {
-			goto err;
+
+		if (freezing(current)) {
+			vgt_warn("ha_checkpoint thread-%d try to freeze.\n", vgt->vm_id);
 		}
-		t1 = vgt_get_cycles();
-		wait_idle = t1 - t0;
-		now = current_render_owner(pdev);
-		vgt_info("XXH waitidle time %lld\n", wait_idle);
-		if (vgt_ha_create_checkpoint(now))
-			goto err;
-		vgt->ha.checkpoint_request = 0;
-		vgt->ha.saving = 0;
-		vgt_unlock_dev(pdev, cpu);
-		continue;
-err:
-		printk("XXH cp err\n");
-		vgt->ha.checkpoint_request = 0;
-		vgt->ha.saving = 0;
-		vgt_unlock_dev(pdev, cpu);
+
+		if (test_and_clear_bit(VGT_HA_REQ_CREATE,
+					(void *)&vgt->ha.request)) {
+			/* create a single checkpoint */
+			/*
+			 * emulate a ctx switch here, suppose prev->next, vgt should be prev.
+			 * we take a copy of prev's saved contents in ha struct,
+			 * if target vgt is current_render_owner, we force a (fake?) ctx switch.
+			 */
+			if (current_render_owner(pdev) == vgt) {
+				vgt_lock_dev(pdev, cpu);
+				if(!vgt_ha_create_checkpoint(vgt))
+					vgt_err("vgt_ha_create_checkpoint failed!\n");
+				vgt_unlock_dev(pdev, cpu);
+
+			}
+			else {
+				vgt_warn("vgt_ha_create_checkpoint failed: request vgt(%d) is not the onwer(%d)!\n", vgt->vm_id, current_render_owner(pdev)->vm_id);
+			}
+		}
 	}
 	return 0;
 }
