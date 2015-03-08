@@ -328,8 +328,9 @@ int create_vgt_instance(struct pgt_device *pdev, struct vgt_device **ptr_vgt, vg
 
 	vgt->warn_untrack = 1;
 
-	/* ha disabled in dom0 now, but set this flag gernerally */
+	/* ha disabled in dom0 now, but set the following properties gernerally */
 	vgt->force_disable_ha = 0;
+	init_waitqueue_head(&vgt->ha.event_wq);
 
 	if (vgt->vm_id != 0) {
 		vgt->ha.saved_vgtt = vzalloc(vgt->vgtt_sz);

@@ -1706,6 +1706,7 @@ int vgt_ha_create_checkpoint(struct vgt_device *vgt)
 {
 	struct pgt_device *pdev = vgt->pdev;
 	int i;
+	cycles_t t0;
 
 	ASSERT(spin_is_locked(&pdev->lock));
 	if (current_render_owner(pdev) != vgt) {
@@ -1716,6 +1717,8 @@ int vgt_ha_create_checkpoint(struct vgt_device *vgt)
 	//if (dom0_vgt != vgt)
 	//	vgt_ha_save_gtt_gm(vgt);
 	//vgt_ha_rendering_save_mmio(vgt);
+
+	t0 = vgt_get_cycles();
 	if (!idle_rendering_engines(pdev, &i)) {
 		int j;
 		vgt_err("vGT: (idle rings in ha_create_checkpoint(VM-%d))...ring(%d) is busy\n",
@@ -1726,6 +1729,9 @@ int vgt_ha_create_checkpoint(struct vgt_device *vgt)
 					VGT_READ_TAIL(pdev, i));
 		goto err;
 	}
+
+	vgt_sched_update_prev(vgt, t0);
+
 	/* STEP-1: manually save render context */
 	vgt_ha_rendering_save_mmio(vgt);
 
@@ -1734,6 +1740,8 @@ int vgt_ha_create_checkpoint(struct vgt_device *vgt)
 		struct vgt_rsvd_ring *ring = &pdev->ring_buffer[i];
 		//vgt_state_ring_t *rb = &vgt->rb[i];
 		vgt_state_ring_t *rb_cp = &vgt->rb_cp[i];
+
+		vgt_info("vgt_ha_create_checkpoint(): Step-2 ring-%d starts ck1\n", i);
 
 		if (!ring->need_switch)
 			continue;
@@ -1744,6 +1752,8 @@ int vgt_ha_create_checkpoint(struct vgt_device *vgt)
 			goto err;
 		}
 
+		vgt_info("vgt_ha_create_checkpoint(): Step-2 ring-%d starts ck2a\n", i);
+
 		/* STEP-2b: save current ring buffer structure */
 		/* only head is HW updated */
 		rb_cp->sring.head = VGT_READ_HEAD(pdev, i);
@@ -1751,6 +1761,8 @@ int vgt_ha_create_checkpoint(struct vgt_device *vgt)
 
 		if (ring->stateless)
 			continue;
+
+		vgt_info("vgt_ha_create_checkpoint(): Step-2 ring-%d starts ck2b\n", i);
 
 		/* STEP-2c: switch to vGT ring buffer */
 		if (!vgt_setup_rsvd_ring(ring)) {
@@ -1760,12 +1772,16 @@ int vgt_ha_create_checkpoint(struct vgt_device *vgt)
 
 		start_ring(pdev, i);
 
+		vgt_info("vgt_ha_create_checkpoint(): Step-2 ring-%d starts ck2c\n", i);
+
 		/* STEP-2d: save HW render context for target vgt */
 		if (!vgt_ha_save_hw_context(i, vgt)) {
 			vgt_err("vgt_ha_create_checkpoint(): Fail to save context\n");
 			goto err;
 		}
 		vgt_info("vgt_ha_create_checkpoint(): Ring-%d save done.\n", i);
+
+		vgt_info("vgt_ha_create_checkpoint(): Step-2 ring-%d starts ck2d\n", i);
 
 #if 0
 		memcpy(rb, rs, sizeof(vgt_state_ring_t));
@@ -1782,8 +1798,9 @@ int vgt_ha_create_checkpoint(struct vgt_device *vgt)
 			rb->active_vm_context &= 0xfffff000;
 		}
 #endif
-		vgt_info("vgt_ha_create_checkpoint(): Ring-%d save done.\n", i);
 	}
+
+	vgt_sched_update_next(vgt);
 
 	vgt_info("vgt_ha_create_checkpoint(): Create Success.\n");
 	return 0;
@@ -1816,27 +1833,37 @@ int vgt_ha_checkpoint_thread(void *priv)
 	//cycles_t t0, t1;
 	int ret;
 	int cpu;
+	int count = 0;
 
 	printk("vGT: start ha_checkpoint kthread for dev (%x, %x)\n", pdev->bus, pdev->devfn);
 
-	set_freezable();
+	//set_freezable();
 	vgt->ha.checkpoint_id = 0;
 	vgt->ha.checkpoint_request = 0;
 	vgt->ha.saving = 0;
 	vgt->ha.enabled = false;
 	while (!kthread_should_stop()) {
+		count++;
 		ret = wait_event_interruptible(vgt->ha.event_wq,
-			vgt->ha.request || freezing(current));
+			vgt->ha.request || kthread_should_stop()/*|| freezing(current)*/);
+		if (kthread_should_stop())
+			break;
 		if (ret)
 			vgt_warn("ha_checkpoint thread-%d waken up by unexpected signal!\n", vgt->vm_id);
 
-		if (!vgt->ha.request && !freezing(current)) {
+		if (!vgt->ha.request /*&& !freezing(current)*/) {
 			vgt_warn("ha_checkpoint thread-%d waken up by unknown reasons!\n", vgt->vm_id);
 			continue;
 		}
 
-		if (freezing(current)) {
+		/*if (freezing(current)) {
 			vgt_warn("ha_checkpoint thread-%d try to freeze.\n", vgt->vm_id);
+		}*/
+
+		if (vgt->vm_id == 0) {
+			vgt->ha.request = 0;
+			vgt_warn("ha_checkpoint thread-%d: Dom0 not supported!\n", vgt->vm_id);
+			continue;
 		}
 
 		if (test_and_clear_bit(VGT_HA_REQ_CREATE,
@@ -1849,13 +1876,21 @@ int vgt_ha_checkpoint_thread(void *priv)
 			 */
 			if (current_render_owner(pdev) == vgt) {
 				vgt_lock_dev(pdev, cpu);
-				if(!vgt_ha_create_checkpoint(vgt))
+				if (vgt_ha_create_checkpoint(vgt) != 0)
 					vgt_err("vgt_ha_create_checkpoint failed!\n");
 				vgt_unlock_dev(pdev, cpu);
 
 			}
 			else {
 				vgt_warn("vgt_ha_create_checkpoint failed: request vgt(%d) is not the onwer(%d)!\n", vgt->vm_id, current_render_owner(pdev)->vm_id);
+				pdev->next_sched_vgt = vgt;
+				vgt_raise_request(pdev, VGT_REQUEST_FORCE_CTX_SWITCH);
+
+#if 0
+				/* Z3: cannot set here, or for single cpu, this kthread will continue busy looping and won't release the cpu, leading to hang-like case */
+				/* pending the ha request to the next round (until current render owner == vgt)*/
+				set_bit(VGT_HA_REQ_CREATE, (void *)&vgt->ha.request);
+#endif
 			}
 		}
 	}
@@ -1916,7 +1951,7 @@ bool vgt_ha_restore(struct vgt_device *vgt)
 	return false;
 }
 
-bool vgt_do_render_context_switch(struct pgt_device *pdev)
+bool vgt_do_render_context_switch(struct pgt_device *pdev, uint32_t force)
 {
 	struct vgt_device *next, *prev;
 	int threshold = 500; /* print every 500 times */
@@ -1942,22 +1977,34 @@ bool vgt_do_render_context_switch(struct pgt_device *pdev)
 	 */
 	vgt_lock_dev(pdev, cpu);
 
-	vgt_schedule(pdev);
+	if (!force) {
+		vgt_schedule(pdev);
 
-	if (!ctx_switch_requested(pdev))
-		goto out;
+		if (!ctx_switch_requested(pdev))
+			goto out;
 
-	ASSERT(spin_is_locked(&pdev->lock));
-	ASSERT(forcewake_count == 0 || forcewake_count == 1);
-	if (forcewake_count == 0) {
-		BUG_ON(hcall_vgt_ctrl(VGT_CTRL_FORCEWAKE_GET) != 0);
-		forcewake_got = true;
+		ASSERT(spin_is_locked(&pdev->lock));
+		ASSERT(forcewake_count == 0 || forcewake_count == 1);
+		if (forcewake_count == 0) {
+			BUG_ON(hcall_vgt_ctrl(VGT_CTRL_FORCEWAKE_GET) != 0);
+			forcewake_got = true;
+		}
+
+		next = pdev->next_sched_vgt;
+		prev = current_render_owner(pdev);
+		ASSERT(pdev->next_sched_vgt);
+		ASSERT(next != prev);
 	}
-
-	next = pdev->next_sched_vgt;
-	prev = current_render_owner(pdev);
-	ASSERT(pdev->next_sched_vgt);
-	ASSERT(next != prev);
+	else {
+		vgt_info("vGT: force a context switch (that accepts an ha request)\n");
+		vgt_force_schedule(pdev);
+		next = pdev->next_sched_vgt;
+		prev = current_render_owner(pdev);
+		if (!pdev->next_sched_vgt)
+			vgt_err("Z3: force ctx switch: no next_sched_vgt!\n");
+		if (next == prev)
+			vgt_err("Z3: force ctx switch: next == prev!\n");
+	}
 
 	t0 = vgt_get_cycles();
 	if (!idle_rendering_engines(pdev, &i)) {

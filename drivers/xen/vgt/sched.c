@@ -102,6 +102,36 @@ static struct vgt_device *tbs_next_vgt(
 	return next_vgt;
 }
 
+/* Z3: choose a next vgt even if its vring is empty (to force a switch)*/
+static struct vgt_device *tbs_force_next_vgt(
+	struct list_head *head, struct vgt_device *vgt)
+{
+	struct list_head *next = &vgt->list;
+	struct vgt_device *next_vgt = NULL;
+	struct pgt_device *pdev;
+
+	if (vgt->force_removal)
+		return vgt_dom0;
+
+	pdev = vgt->pdev;
+	if (ctx_switch_requested(pdev))
+		return pdev->next_sched_vgt;
+
+	do {
+		next = next->next;
+		/* wrap the list */
+		if (next == head)
+			next = head->next;
+		next_vgt = list_entry(next, struct vgt_device, list);
+
+		if (next_vgt != vgt)
+			break;
+
+	} while (next_vgt != vgt);
+
+	return next_vgt;
+}
+
 /* safe to not use vgt_enter/vgt_exit, otherwise easily lead to deadlock */
 static enum hrtimer_restart vgt_tbs_timer_fn(struct hrtimer *data)
 {
@@ -798,6 +828,16 @@ void vgt_schedule(struct pgt_device *pdev)
 			current_render_owner(pdev));
 }
 
+void vgt_force_schedule(struct pgt_device *pdev)
+{
+	ASSERT(spin_is_locked(&pdev->lock));
+
+	if (vgt_nr_in_runq(pdev) < 2)
+		return;
+
+	pdev->next_sched_vgt = tbs_force_next_vgt(&pdev->rendering_runq_head,
+			current_render_owner(pdev));
+}
 
 static int calculate_budget(struct vgt_device *vgt)
 {

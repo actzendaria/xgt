@@ -427,7 +427,7 @@ struct pgt_device;
 extern bool idle_rendering_engines(struct pgt_device *pdev, int *id);
 extern bool idle_render_engine(struct pgt_device *pdev, int id);
 extern bool vgt_ha_restore(struct vgt_device *vgt);
-extern bool vgt_do_render_context_switch(struct pgt_device *pdev);
+extern bool vgt_do_render_context_switch(struct pgt_device *pdev, uint32_t force);
 extern void vgt_destroy(void);
 extern void vgt_destroy_debugfs(struct vgt_device *vgt);
 extern void vgt_release_debugfs(void);
@@ -611,8 +611,8 @@ struct gt_port {
 };
 
 /* request types to wake up per-vgt ha_checkpoint thread */
-#define VGT_HA_REQ_CREATE	0	/* create a single checkpoint */
-#define VGT_HA_REQ_RESTORE	1
+#define VGT_HA_REQ_CREATE	1	/* create a single checkpoint */
+#define VGT_HA_REQ_RESTORE	2
 
 typedef struct {
 	int checkpoint_id;
@@ -1204,6 +1204,7 @@ static inline void reg_update_handlers(struct pgt_device *pdev,
 #define VGT_REQUEST_EMUL_DPY_EVENTS	3
 #define VGT_REQUEST_DPY_SWITCH	4	/* immediate reschedule(display switch) requested */
 #define VGT_REQUEST_DEVICE_RESET 5
+#define VGT_REQUEST_FORCE_CTX_SWITCH	6	/* Z3: for ha usage */
 
 static inline void vgt_raise_request(struct pgt_device *pdev, uint32_t flag)
 {
@@ -2362,6 +2363,7 @@ extern void vgt_submit_commands(struct vgt_device *vgt, int ring_id);
 extern void vgt_sched_update_prev(struct vgt_device *vgt, cycles_t time);
 extern void vgt_sched_update_next(struct vgt_device *vgt);
 extern void vgt_schedule(struct pgt_device *pdev);
+extern void vgt_force_schedule(struct pgt_device *pdev);
 
 /* klog facility for buck printk */
 extern int vgt_klog_init(void);

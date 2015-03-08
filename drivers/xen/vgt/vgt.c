@@ -240,6 +240,7 @@ static int vgt_thread(void *priv)
 	struct pgt_device *pdev = (struct pgt_device *)priv;
 	int ret;
 	int cpu;
+	struct vgt_device *vgt_tmp = NULL;
 
 	//ASSERT(current_render_owner(pdev));
 	printk("vGT: start kthread for dev (%x, %x)\n", pdev->bus, pdev->devfn);
@@ -263,7 +264,7 @@ static int vgt_thread(void *priv)
 			}
 			else {
 				vgt_lock_dev(pdev, cpu);
-				vgt_info("XXH\n");
+				vgt_info("XXH freezing\n");
 				pdev->next_sched_vgt = vgt_dom0;
 				vgt_raise_request(pdev, VGT_REQUEST_CTX_SWITCH);
 				vgt_unlock_dev(pdev, cpu);
@@ -301,7 +302,7 @@ static int vgt_thread(void *priv)
 		if (vgt_ctx_switch &&
 		    test_and_clear_bit(VGT_REQUEST_CTX_SWITCH,
 				(void *)&pdev->request)) {
-			if (!vgt_do_render_context_switch(pdev)) {
+			if (!vgt_do_render_context_switch(pdev, 0)) {
 				if (enable_reset) {
 					vgt_err("Hang in context switch, try to reset device.\n");
 
@@ -312,6 +313,43 @@ static int vgt_thread(void *priv)
 				}
 			}
 		}
+
+		/* Z3: Handle force render context switch request*/
+		if (vgt_ctx_switch &&
+		    test_and_clear_bit(VGT_REQUEST_FORCE_CTX_SWITCH,
+				(void *)&pdev->request)) {
+			vgt_tmp = pdev->next_sched_vgt;
+			if (vgt_tmp)
+				vgt_info("Z3: receive a VGT_REQUEST_FORCE_CTX_SWITCH for vm-%d.\n", vgt_tmp->vm_id);
+			else
+				vgt_warn("Z3: receive a VGT_REQUEST_FORCE_CTX_SWITCH but next_sched_vgt = NULL!\n");
+
+			if (!vgt_do_render_context_switch(pdev, 1)) {
+				if (enable_reset) {
+					vgt_err("Hang in context switch, try to reset device.\n");
+
+					vgt_reset_device(pdev);
+				} else {
+					vgt_err("Hang in context switch, panic the system.\n");
+					ASSERT(0);
+				}
+			}
+			/* Z3: a VGT_HA_REQ_CREATE causes a force ctx swtich and goes to here*/
+			else {
+				/* add a VGT_HA_REQ_CREATE here */
+				if (current_render_owner(pdev) != vgt_tmp) {
+					vgt_warn("Z3: unexpected switched render owner to vm-%d, ha request target is vm-%d!\n",
+							current_render_owner(pdev)->vm_id, vgt_tmp->vm_id);
+				}
+				else {
+					vgt_info("Z3: switched render owner to vm-%d, ask for a VGT_HA_REQ_CREATE request again.\n",
+							current_render_owner(pdev)->vm_id);
+					vgt_raise_ha_request(current_render_owner(pdev), VGT_HA_REQ_CREATE);
+				}
+			}
+			vgt_tmp = NULL;
+		}
+
 
 		if (test_and_clear_bit(VGT_REQUEST_EMUL_DPY_EVENTS,
 				(void *)&pdev->request)) {
