@@ -486,6 +486,21 @@ vgt_reg_t vgt_gen7_render_regs[] = {
 	0xb038,
 };
 
+static void vgt_ha_save_ringbuffer(struct vgt_device *vgt, int id)
+{
+	struct pgt_device *pdev = vgt->pdev;
+	vgt_state_ring_t *rb = &vgt->rb[id];
+	vgt_state_ring_t *rb_cp = &vgt->rb_cp[id];
+
+	/* only head is HW updated */
+	rb_cp->sring.head = VGT_READ_HEAD(pdev, id);
+	/* Should be the same */
+	if (rb_cp->sring.head != rb->sring.head) {
+		vgt_warn("vgt_ha_save_ringbuffer(): rb_cp != rb\n");
+	}
+	rb_cp->vring.head = rb_cp->sring.head;
+}
+
 static void __vgt_ha_rendering_save(struct vgt_device *vgt, int num, vgt_reg_t *regs)
 {
 	vgt_reg_t	*sreg, *vreg;	/* shadow regs */
@@ -1348,6 +1363,189 @@ static bool vgt_reset_engine(struct pgt_device *pdev, int id)
 	return true;
 }
 
+static bool vgt_ha_restore_hw_context(int id, struct vgt_device *vgt)
+{
+	struct pgt_device *pdev = vgt->pdev;
+	vgt_state_ring_t	*rb = &vgt->rb[id];
+	vgt_state_ring_t	*rb_cp = &vgt->rb_cp[id];
+	struct vgt_rsvd_ring *ring = &pdev->ring_buffer[id];
+
+	/* sync between vReg and saved context */
+	//update_context(vgt, rb->context_save_area);
+
+	/* pipeline flush */
+	vgt_ring_emit(ring, PIPE_CONTROL(5));
+	vgt_ring_emit(ring, PIPE_CONTROL_CS_STALL |
+			    PIPE_CONTROL_TLB_INVALIDATE |
+			    PIPE_CONTROL_FLUSH_ENABLE);
+	vgt_ring_emit(ring, 0);
+	vgt_ring_emit(ring, 0);
+	vgt_ring_emit(ring, 0);
+
+#if 0
+	/*
+	 * we don't want to clobber the null context. so invalidate
+	 * the current context before restoring next instance
+	 */
+	vgt_ring_emit(ring, MI_LOAD_REGISTER_IMM |
+			    MI_LRI_BYTE1_DISABLE |
+			    MI_LRI_BYTE2_DISABLE |
+			    MI_LRI_BYTE3_DISABLE);
+	vgt_ring_emit(ring, _REG_CCID);
+	vgt_ring_emit(ring, 0);
+
+	/* pipeline flush */
+	vgt_ring_emit(ring, PIPE_CONTROL(5));
+	vgt_ring_emit(ring, PIPE_CONTROL_CS_STALL |
+			    PIPE_CONTROL_TLB_INVALIDATE |
+			    PIPE_CONTROL_FLUSH_ENABLE |
+			    PIPE_CONTROL_POST_SYNC_IMM |
+			    PIPE_CONTROL_POST_SYNC_GLOBAL_GTT);
+	vgt_ring_emit(ring, vgt_data_ctx_magic(pdev));
+	vgt_ring_emit(ring, ++pdev->magic);
+	vgt_ring_emit(ring, 0);
+
+	vgt_ring_emit(ring, MI_NOOP);
+	vgt_ring_emit(ring, MI_NOOP);
+	vgt_ring_emit(ring, MI_NOOP);
+
+	/* submit cmds */
+	vgt_ring_advance(ring);
+
+	if (!ring_wait_for_completion(pdev, id)) {
+		vgt_err("Invalidate CCID after NULL restore: commands unfinished\n");
+		return false;
+	}
+
+	if (VGT_MMIO_READ(pdev, _REG_CCID) != 0) {
+		vgt_err("Invalidate CCID after NULL restore: fail [%x, %x]\n",
+			VGT_MMIO_READ(pdev, _REG_CCID), 0);
+		return false;
+	}
+#endif
+
+	/* restore HW context */
+	vgt_ring_emit(ring, MI_ARB_ON_OFF | MI_ARB_DISABLE);
+	vgt_ring_emit(ring, MI_SET_CONTEXT);
+	/* Z3: how to deal with this value? rb->context_save_area (assign in alloc_aperture, seem like a initailized fixed value*/
+	vgt_ring_emit(ring, rb->context_save_area |
+			    MI_MM_SPACE_GTT |
+			    MI_SAVE_EXT_STATE_EN |
+			    MI_RESTORE_EXT_STATE_EN |
+			    MI_FORCE_RESTORE);
+	vgt_ring_emit(ring, MI_NOOP);
+	vgt_ring_emit(ring, MI_ARB_ON_OFF | MI_ARB_ENABLE);
+
+#if 0
+	vgt_ring_emit(ring, DUMMY_3D);
+	vgt_ring_emit(ring, PRIM_TRILIST);
+	vgt_ring_emit(ring, 0);
+	vgt_ring_emit(ring, 0);
+	vgt_ring_emit(ring, 0);
+	vgt_ring_emit(ring, 0);
+	vgt_ring_emit(ring, 0);
+	vgt_ring_emit(ring, MI_NOOP);
+#endif
+
+	/* pipeline flush */
+	vgt_ring_emit(ring, PIPE_CONTROL(5));
+	vgt_ring_emit(ring, PIPE_CONTROL_CS_STALL |
+			    PIPE_CONTROL_TLB_INVALIDATE |
+			    PIPE_CONTROL_FLUSH_ENABLE |
+			    PIPE_CONTROL_MEDIA_STATE_CLEAR |
+			    PIPE_CONTROL_POST_SYNC_IMM |
+			    PIPE_CONTROL_POST_SYNC_GLOBAL_GTT);
+	vgt_ring_emit(ring, vgt_data_ctx_magic(pdev));
+	vgt_ring_emit(ring, ++pdev->magic);
+	vgt_ring_emit(ring, 0);
+
+	vgt_ring_emit(ring, MI_NOOP);
+	vgt_ring_emit(ring, MI_NOOP);
+	vgt_ring_emit(ring, MI_NOOP);
+
+	/* submit CMDs */
+	vgt_ring_advance(ring);
+
+	if (!ring_wait_for_completion(pdev, id)) {
+		vgt_err("restore context switch commands unfinished\n");
+		return false;
+	}
+
+#if 0
+	/* then restore current context to whatever VM expects */
+	vgt_ring_emit(ring, MI_LOAD_REGISTER_IMM);
+	vgt_ring_emit(ring, _REG_CCID);
+	vgt_ring_emit(ring, __vreg(vgt, _REG_CCID));
+
+	/* pipeline flush */
+	vgt_ring_emit(ring, PIPE_CONTROL(5));
+	vgt_ring_emit(ring, PIPE_CONTROL_CS_STALL |
+			    PIPE_CONTROL_TLB_INVALIDATE |
+			    PIPE_CONTROL_FLUSH_ENABLE |
+			    PIPE_CONTROL_POST_SYNC_IMM |
+			    PIPE_CONTROL_POST_SYNC_GLOBAL_GTT);
+	vgt_ring_emit(ring, vgt_data_ctx_magic(pdev));
+	vgt_ring_emit(ring, ++pdev->magic);
+	vgt_ring_emit(ring, 0);
+
+	vgt_ring_emit(ring, MI_NOOP);
+	vgt_ring_emit(ring, MI_NOOP);
+	vgt_ring_emit(ring, MI_NOOP);
+
+	/* submit CMDs */
+	vgt_ring_advance(ring);
+
+	if (!ring_wait_for_completion(pdev, id)) {
+		vgt_err("Restore VM CCID: commands unfinished\n");
+		return false;
+	}
+
+	if (VGT_MMIO_READ(pdev, _REG_CCID) != __vreg(vgt, _REG_CCID)) {
+		vgt_err("Restore VM CCID: fail [%x, %x]\n",
+			VGT_MMIO_READ(pdev, _REG_CCID),
+			__vreg(vgt, _REG_CCID));
+		return false;
+	}
+#else
+	if (vgt->has_context && rb_cp->active_vm_context) {
+		vgt_ring_emit(ring, MI_ARB_ON_OFF | MI_ARB_DISABLE);
+		vgt_ring_emit(ring, MI_SET_CONTEXT);
+		vgt_ring_emit(ring, rb_cp->active_vm_context |
+				MI_MM_SPACE_GTT |
+				MI_SAVE_EXT_STATE_EN |
+				MI_RESTORE_EXT_STATE_EN |
+				MI_FORCE_RESTORE);
+		vgt_ring_emit(ring, MI_NOOP);
+		vgt_ring_emit(ring, MI_ARB_ON_OFF | MI_ARB_ENABLE);
+
+		vgt_ring_emit(ring, DUMMY_3D);
+		vgt_ring_emit(ring, PRIM_TRILIST);
+		vgt_ring_emit(ring, 0);
+		vgt_ring_emit(ring, 0);
+		vgt_ring_emit(ring, 0);
+		vgt_ring_emit(ring, 0);
+		vgt_ring_emit(ring, 0);
+		vgt_ring_emit(ring, MI_NOOP);
+
+		vgt_ring_emit(ring, MI_STORE_DATA_IMM | MI_SDI_USE_GTT);
+		vgt_ring_emit(ring, 0);
+		vgt_ring_emit(ring, vgt_data_ctx_magic(pdev));
+		vgt_ring_emit(ring, ++pdev->magic);
+		vgt_ring_emit(ring, 0);
+		vgt_ring_emit(ring, 0);
+		vgt_ring_emit(ring, MI_NOOP);
+
+		vgt_ring_advance(ring);
+
+		if (!ring_wait_for_completion(pdev, id)) {
+			vgt_err("change to VM context switch commands unfinished\n");
+			return false;
+		}
+	}
+#endif
+	return true;
+}
+
 static bool vgt_restore_hw_context(int id, struct vgt_device *vgt)
 {
 	struct pgt_device *pdev = vgt->pdev;
@@ -1554,10 +1752,154 @@ static void dump_regs_on_err(struct pgt_device *pdev)
 
 extern struct vgt_device *dom0_vgt;
 
+/* Z3: save both orig & ha hw_context*/
+static bool vgt_ha_and_orig_save_hw_context(int id, struct vgt_device *vgt)
+{
+	struct pgt_device *pdev = vgt->pdev;
+	vgt_state_ring_t *rb = &vgt->rb[id];
+	vgt_state_ring_t *rb_cp = &vgt->rb_cp[id];
+	struct vgt_rsvd_ring *ring = &pdev->ring_buffer[id];
+	vgt_reg_t	ccid, new_ccid;
+
+	/* pipeline flush */
+	vgt_ring_emit(ring, PIPE_CONTROL(5));
+	vgt_ring_emit(ring, PIPE_CONTROL_CS_STALL |
+			    PIPE_CONTROL_TLB_INVALIDATE |
+			    PIPE_CONTROL_FLUSH_ENABLE);
+	vgt_ring_emit(ring, 0);
+	vgt_ring_emit(ring, 0);
+	vgt_ring_emit(ring, 0);
+
+	vgt_ring_emit(ring, PIPE_CONTROL(5));
+	vgt_ring_emit(ring, PIPE_CONTROL_RENDER_TARGET_CACHE_FLUSH |
+			    PIPE_CONTROL_FLUSH_ENABLE |
+			    PIPE_CONTROL_VF_CACHE_INVALIDATE |
+			    PIPE_CONTROL_CONST_CACHE_INVALIDATE |
+			    PIPE_CONTROL_STATE_CACHE_INVALIDATE);
+	vgt_ring_emit(ring, 0);
+	vgt_ring_emit(ring, 0);
+	vgt_ring_emit(ring, 0);
+
+#if 0
+	/*
+	 * Activate XenGT context for prev
+	 * Guest may have an active context already. Better to not clobber
+	 * that area, and instead have full control on the context save
+	 * area directly in XenGT driver.
+	 */
+	ccid = rb->context_save_area |
+	       CCID_EXTENDED_STATE_SAVE_ENABLE |
+	       CCID_EXTENDED_STATE_RESTORE_ENABLE |
+	       CCID_VALID;
+	vgt_ring_emit(ring, MI_LOAD_REGISTER_IMM);
+	vgt_ring_emit(ring, _REG_CCID);
+	vgt_ring_emit(ring, ccid);
+
+	/* pipeline flush */
+	vgt_ring_emit(ring, PIPE_CONTROL(5));
+	vgt_ring_emit(ring, PIPE_CONTROL_CS_STALL |
+			    PIPE_CONTROL_TLB_INVALIDATE |
+			    PIPE_CONTROL_FLUSH_ENABLE |
+			    PIPE_CONTROL_POST_SYNC_IMM |
+			    PIPE_CONTROL_POST_SYNC_GLOBAL_GTT);
+	vgt_ring_emit(ring, vgt_data_ctx_magic(pdev));
+	vgt_ring_emit(ring, ++pdev->magic);
+	vgt_ring_emit(ring, 0);
+
+	vgt_ring_emit(ring, MI_NOOP);
+	vgt_ring_emit(ring, MI_NOOP);
+	vgt_ring_emit(ring, MI_NOOP);
+
+	/* submit cmds */
+	vgt_ring_advance(ring);
+
+	if (!ring_wait_for_completion(pdev, id)) {
+		vgt_err("change CCID to XenGT save context: commands unfinished\n");
+		return false;
+	}
+
+	if (VGT_MMIO_READ(pdev, _REG_CCID) != ccid) {
+		vgt_err("change CCID to XenGT save context: fail [%x, %x]\n",
+			VGT_MMIO_READ(pdev, _REG_CCID), ccid);
+		return false;
+	}
+
+	/* Save context and switch to NULL context */
+	vgt_ring_emit(ring, MI_ARB_ON_OFF | MI_ARB_DISABLE);
+	vgt_ring_emit(ring, MI_SET_CONTEXT);
+	vgt_ring_emit(ring, ring->null_context |
+			    MI_MM_SPACE_GTT |
+			    MI_SAVE_EXT_STATE_EN |
+			    MI_RESTORE_EXT_STATE_EN |
+			    MI_FORCE_RESTORE);
+	vgt_ring_emit(ring, MI_NOOP);
+	vgt_ring_emit(ring, MI_ARB_ON_OFF | MI_ARB_ENABLE);
+#else
+	/* FIXME: too many CCID changes looks not working. So
+	 * fall back to original style by using guest context directly
+	 */
+	if (vgt->has_context) {
+		rb->active_vm_context = VGT_MMIO_READ(pdev, _REG_CCID);
+		rb->active_vm_context &= 0xfffff000;
+		rb_cp->active_vm_context = rb->active_vm_context;
+	}
+
+	vgt_ring_emit(ring, MI_ARB_ON_OFF | MI_ARB_DISABLE);
+	vgt_ring_emit(ring, MI_SET_CONTEXT);
+	vgt_ring_emit(ring, rb->context_save_area |
+			    MI_RESTORE_INHIBIT |
+			    MI_SAVE_EXT_STATE_EN |
+			    MI_RESTORE_EXT_STATE_EN);
+	vgt_ring_emit(ring, MI_NOOP);
+	vgt_ring_emit(ring, MI_ARB_ON_OFF | MI_ARB_ENABLE);
+#endif
+
+	/* pipeline flush */
+	vgt_ring_emit(ring, PIPE_CONTROL(5));
+	vgt_ring_emit(ring, PIPE_CONTROL_CS_STALL |
+			    PIPE_CONTROL_TLB_INVALIDATE |
+			    PIPE_CONTROL_FLUSH_ENABLE |
+			    PIPE_CONTROL_MEDIA_STATE_CLEAR |
+			    PIPE_CONTROL_DC_FLUSH_ENABLE |
+			    PIPE_CONTROL_RENDER_TARGET_CACHE_FLUSH |
+			    PIPE_CONTROL_POST_SYNC_IMM |
+			    PIPE_CONTROL_POST_SYNC_GLOBAL_GTT);
+	vgt_ring_emit(ring, vgt_data_ctx_magic(pdev));
+	vgt_ring_emit(ring, ++pdev->magic);
+	vgt_ring_emit(ring, 0);
+
+	vgt_ring_emit(ring, MI_NOOP);
+	vgt_ring_emit(ring, MI_NOOP);
+	vgt_ring_emit(ring, MI_NOOP);
+
+	/* submit cmds */
+	vgt_ring_advance(ring);
+
+	if (!ring_wait_for_completion(pdev, id)) {
+		vgt_err("save context commands unfinished\n");
+		return false;
+	}
+
+	ccid = VGT_MMIO_READ (pdev, _REG_CCID);
+#if 0
+	new_ccid = ring->null_context;
+#else
+	new_ccid = rb->context_save_area;
+#endif
+	if ((ccid & GTT_PAGE_MASK) != (new_ccid & GTT_PAGE_MASK)) {
+		vgt_err("vGT: CCID isn't changed [%x, %lx]\n", ccid, (unsigned long)new_ccid);
+		return false;
+	}
+
+	return true;
+}
+
+#if 0
 static bool vgt_ha_save_hw_context(int id, struct vgt_device *vgt)
 {
 	struct pgt_device *pdev = vgt->pdev;
-	vgt_state_ring_t *rb = &vgt->rb_cp[id];
+	vgt_state_ring_t *rb = &vgt->rb[id];
+	vgt_state_ring_t *rb_cp = &vgt->rb_cp[id];
 	struct vgt_rsvd_ring *ring = &pdev->ring_buffer[id];
 	//vgt_reg_t	ccid, new_ccid;
 
@@ -1586,6 +1928,7 @@ static bool vgt_ha_save_hw_context(int id, struct vgt_device *vgt)
 	if (vgt->has_context) {
 		rb->active_vm_context = VGT_MMIO_READ(pdev, _REG_CCID);
 		rb->active_vm_context &= 0xfffff000;
+		rb_cp->active_vm_context = rb->active_vm_context;
 	}
 
 	vgt_ring_emit(ring, MI_ARB_ON_OFF | MI_ARB_DISABLE);
@@ -1633,6 +1976,7 @@ static bool vgt_ha_save_hw_context(int id, struct vgt_device *vgt)
 #endif
 	return true;
 }
+#endif
 
 int vgt_ha_restore_gtt_gm(struct vgt_device *vgt)
 {
@@ -1672,13 +2016,13 @@ int vgt_ha_save_gtt_gm(struct vgt_device *vgt)
 	t0 = vgt_get_cycles();
 	memcpy(vgt->ha.saved_vgtt, vgt->vgtt, vgt->vgtt_sz);
 	low_frame_cnt = vgt_aperture_sz(vgt) >> PAGE_SHIFT;
-	printk("ZD: save GM low pages:%u high_pages:%u\n",
+	printk("Z3: save GM low pages:%u high_pages:%u\n",
 		(unsigned int)low_frame_cnt, (unsigned int)vgt_hidden_gm_sz(vgt) >> PAGE_SHIFT);
 	for (i = 0, j = 0; i < low_frame_cnt; i++, j++)
 	{
 		gma = low_base + (i << PAGE_SHIFT);
 		if (!g_gmpage_is_valid(vgt, gma)) {
-			printk("ZD: VM(%d) Page 0x%llu is not valid!\n",
+			printk("Z3: VM(%d) Page 0x%llu is not valid!\n",
 				vgt->vm_id, (unsigned long long)gma);
 			continue;
 		}
@@ -1689,7 +2033,7 @@ int vgt_ha_save_gtt_gm(struct vgt_device *vgt)
 	{
 		gma = high_base + (i << PAGE_SHIFT);
 		if (!g_gmpage_is_valid(vgt, gma)) {
-			printk("ZD: VM(%d) Page 0x%llu is not valid!\n",
+			printk("Z3: VM(%d) Page 0x%llu is not valid!\n",
 				vgt->vm_id, (unsigned long long)gma);
 			continue;
 		}
@@ -1704,6 +2048,226 @@ int vgt_ha_save_gtt_gm(struct vgt_device *vgt)
 
 int vgt_ha_create_checkpoint(struct vgt_device *vgt)
 {
+/* Z3: 	enable next=prev ctx switch in do_render_context_switch() could cause ring stuck
+	(reset & hang) when launching a vgt HVM in several hundreads of switches
+	while this code to take snapshot (next=prev=target) could cause idle_ring_engines()
+	timeout (500 ms) sometimes (and may trigger a reset), so try to do a regular ctx switch (next=dom0) when requesting a snapshot */
+	struct vgt_device *next, *prev;
+	struct pgt_device *pdev = vgt->pdev;
+	int i;
+	cycles_t t0, t1, t2;
+	int cpu;
+	bool forcewake_got = false;
+
+	ASSERT(!vgt_runq_is_empty(pdev));
+
+	vgt_lock_dev(pdev, cpu);
+	if (current_render_owner(pdev) != vgt) {
+		vgt_warn("vgt_ha_create_checkpoint() failed: target is not render owner\n");
+		goto err;
+	}
+
+	/*
+	 * Z3: hold by pdev big lock
+	 * disable interrupt which is sufficient to prevent more
+	 * cmds submitted by the current owner, when dom0 is UP.
+	 * if the mmio handler for HVM is made into a thread,
+	 * simply a spinlock is enough. IRQ handler is another
+	 * race point
+	 */
+	//vgt_lock_dev(pdev, cpu);
+
+	//vgt_schedule(pdev);
+
+	/*if (!ctx_switch_requested(pdev)) {
+		goto out;
+	}*/
+
+	ASSERT(forcewake_count == 0 || forcewake_count == 1);
+	if (forcewake_count == 0) {
+		vgt_info("vgt_ha_create_checkpoint(): forcewake_count == 0\n");
+		BUG_ON(hcall_vgt_ctrl(VGT_CTRL_FORCEWAKE_GET) != 0);
+		forcewake_got = true;
+	}
+
+	next = vgt_dom0;
+	prev = current_render_owner(pdev);
+	ASSERT(pdev->next_sched_vgt);
+	ASSERT(next != prev);
+
+	t0 = vgt_get_cycles();
+	if (!idle_rendering_engines(pdev, &i)) {
+		int j;
+		vgt_err("vGT: (%lldth switch<%d>)...ring(%d) is busy\n",
+				vgt_ctx_switch(pdev),
+				current_render_owner(pdev)->vgt_id, i);
+		for (j = 0; j < 10; j++)
+			printk("pHEAD(%x), pTAIL(%x)\n",
+					VGT_READ_HEAD(pdev, i),
+					VGT_READ_TAIL(pdev, i));
+		goto err;
+	}
+
+	vgt_dbg(VGT_DBG_RENDER, "vGT: next vgt (%d)\n", next->vgt_id);
+	
+	/* variable exported by debugfs */
+	context_switch_num ++;
+	t1 = vgt_get_cycles();
+	ring_idle_wait += t1 - t0;
+
+	vgt_sched_update_prev(prev, t0);
+
+	if ( prev )
+		prev->stat.allocated_cycles +=
+			(t0 - prev->stat.schedule_in_time);
+	vgt_ctx_switch(pdev)++;
+
+	/* STEP-1: manually save render context */
+	vgt_rendering_save_mmio(prev);
+	vgt_ha_rendering_save_mmio(vgt);
+
+	/* STEP-2: HW render context switch */
+	for (i=0; i < pdev->max_engines; i++) {
+		struct vgt_rsvd_ring *ring = &pdev->ring_buffer[i];
+
+		if (!ring->need_switch) {
+			vgt_warn("vgt_ha_create_checkpoint(): ring[%d] !need_switch !\n", i);
+			continue;
+		}
+
+		/* STEP-2a: stop the ring */
+		if (!stop_ring(pdev, i)) {
+			vgt_err("Fail to stop ring (1st)\n");
+			goto err;
+		}
+
+		/* STEP-2b: save current ring buffer structure */
+		vgt_save_ringbuffer(prev, i);
+		vgt_ha_save_ringbuffer(prev, i);
+
+		if (ring->stateless)
+			continue;
+
+		/* STEP-2c: switch to vGT ring buffer */
+		if (!vgt_setup_rsvd_ring(ring)) {
+			vgt_err("Fail to setup rsvd ring\n");
+			goto err;
+		}
+
+		start_ring(pdev, i);
+
+		/* STEP-2d: save HW render context for prev */
+		if (!vgt_ha_and_orig_save_hw_context(i, prev)) {
+			vgt_err("vgt_ha_create_checkpoint(): Fail to save context\n");
+			goto err;
+		}
+
+		if (render_engine_reset && !vgt_reset_engine(pdev, i)) {
+			vgt_err("Fail to reset engine\n");
+			goto err;
+		}
+
+		/* STEP-2e: restore HW render context for next */
+		if (!vgt_restore_hw_context(i, next)) {
+			vgt_err("Fail to restore context\n");
+			goto err;
+		}
+
+		/* STEP-2f: idle and stop ring at the end of HW switch */
+		if (!idle_render_engine(pdev, i)) {
+			vgt_err("fail to idle ring-%d after ctx restore\n", i);
+			goto err;
+		}
+
+		if (!stop_ring(pdev, i)) {
+			vgt_err("Fail to stop ring (2nd)\n");
+			goto err;
+		}
+	}
+
+	/* Z3: this gm save may not be in a proper place */
+	vgt_ha_save_gtt_gm(prev);
+
+	/* STEP-3: manually restore render context */
+	vgt_rendering_restore_mmio(next);
+
+	/* STEP-4: restore ring buffer structure */
+	for (i = 0; i < pdev->max_engines; i++)
+		vgt_restore_ringbuffer(next, i);
+
+	/* STEP-5: switch PPGTT */
+	current_render_owner(pdev) = next;
+	/* ppgtt switch must be done after render owner switch */
+	if (pdev->enable_ppgtt && next->ppgtt_initialized)
+		vgt_ppgtt_switch(next);
+
+	/* STEP-6: ctx switch ends, and then kicks of new tail */
+	vgt_kick_ringbuffers(next);
+
+	/* NOTE: do NOT access MMIO after this PUT hypercall! */
+	if (forcewake_got)
+		BUG_ON(hcall_vgt_ctrl(VGT_CTRL_FORCEWAKE_PUT) != 0);
+
+	/* request to check IRQ when ctx switch happens */
+	if (prev->force_removal ||
+		bitmap_empty(prev->enabled_rings, MAX_ENGINES)) {
+		printk("Disable render for vgt(%d) from kthread\n",
+			prev->vgt_id);
+		vgt_disable_render(prev);
+		wmb();
+		if (prev->force_removal) {
+			prev->force_removal = 0;
+			if (waitqueue_active(&pdev->destroy_wq))
+				wake_up(&pdev->destroy_wq);
+		}
+		/* no need to check if prev is to be destroyed */
+	}
+
+	next->stat.schedule_in_time = vgt_get_cycles();
+
+	vgt_sched_update_next(next);
+
+	t2 = vgt_get_cycles();
+	context_switch_cost += (t2-t1);
+//out:
+	vgt_unlock_dev(pdev, cpu);
+	return 0;
+err:
+	dump_regs_on_err(pdev);
+	/* TODO: any cleanup for context switch errors? */
+	vgt_err("Ring-%d: (%lldth checks %lldth switch<%d->%d>)\n",
+			i, vgt_ctx_check(pdev), vgt_ctx_switch(pdev),
+			prev->vgt_id, next->vgt_id);
+	vgt_err("FAIL on ring-%d\n", i);
+	vgt_err("cur(%d): head(%x), tail(%x), start(%x)\n",
+			current_render_owner(pdev)->vgt_id,
+			current_render_owner(pdev)->rb[i].sring.head,
+			current_render_owner(pdev)->rb[i].sring.tail,
+			current_render_owner(pdev)->rb[i].sring.start);
+	vgt_err("dom0(%d): head(%x), tail(%x), start(%x)\n",
+			vgt_dom0->vgt_id,
+			vgt_dom0->rb[i].sring.head,
+			vgt_dom0->rb[i].sring.tail,
+			vgt_dom0->rb[i].sring.start);
+	show_ring_debug(pdev, i);
+	show_ringbuffer(pdev, i, 16 * sizeof(vgt_reg_t));
+	if (!enable_reset)
+		/* crash system now, to avoid causing more confusing errors */
+		ASSERT(0);
+
+	/*
+	 * put this after the ASSERT(). When ASSERT() tries to dump more
+	 * CPU/GPU states: we want to hold the lock to prevent other
+	 * vcpus' vGT related codes at this time.
+	 */
+
+	if (forcewake_got)
+		BUG_ON(hcall_vgt_ctrl(VGT_CTRL_FORCEWAKE_PUT) != 0);
+
+	vgt_unlock_dev(pdev, cpu);
+
+	return -1;
+#if 0
 	struct pgt_device *pdev = vgt->pdev;
 	int i;
 	cycles_t t0;
@@ -1816,6 +2380,229 @@ err:
 	 * vcpus' vGT related codes at this time.
 	 */
 	return -1;
+#endif
+}
+
+int vgt_ha_restore_checkpoint(struct vgt_device *vgt)
+{
+	struct vgt_device *next, *prev;
+	struct pgt_device *pdev = vgt->pdev;
+	int i;
+	cycles_t t0, t1, t2;
+	int cpu;
+	bool forcewake_got = false;
+
+	vgt_info("XXH: vgt %d ha restore checkpoint start\n", vgt->vm_id);
+	ASSERT(!vgt_runq_is_empty(pdev));
+
+	vgt_lock_dev(pdev, cpu);
+	if (current_render_owner(pdev) != vgt_dom0) {
+		vgt_warn("vgt_ha_restore_checkpoint(vm:%d) failed: dom0 is not the owner!\n", vgt->vm_id);
+		goto err;
+	}
+
+	ASSERT(forcewake_count == 0 || forcewake_count == 1);
+	if (forcewake_count == 0) {
+		vgt_info("vgt_ha_restore_checkpoint(): forcewake_count == 0\n");
+		BUG_ON(hcall_vgt_ctrl(VGT_CTRL_FORCEWAKE_GET) != 0);
+		forcewake_got = true;
+	}
+
+	next = vgt;
+	prev = current_render_owner(pdev);
+	ASSERT(pdev->next_sched_vgt);
+	ASSERT(next != prev);
+
+	t0 = vgt_get_cycles();
+	if (!idle_rendering_engines(pdev, &i)) {
+		int j;
+		vgt_err("vGT: (%lldth switch<%d>)...ring(%d) is busy\n",
+				vgt_ctx_switch(pdev),
+				current_render_owner(pdev)->vgt_id, i);
+		for (j = 0; j < 10; j++)
+			printk("pHEAD(%x), pTAIL(%x)\n",
+					VGT_READ_HEAD(pdev, i),
+					VGT_READ_TAIL(pdev, i));
+		goto err;
+	}
+
+	vgt_dbg(VGT_DBG_RENDER, "vGT: next vgt (%d)\n", next->vgt_id);
+	
+	/* variable exported by debugfs */
+	context_switch_num ++;
+	t1 = vgt_get_cycles();
+	ring_idle_wait += t1 - t0;
+
+	vgt_sched_update_prev(prev, t0);
+
+	if ( prev )
+		prev->stat.allocated_cycles +=
+			(t0 - prev->stat.schedule_in_time);
+	vgt_ctx_switch(pdev)++;
+
+	/* STEP-1: manually save render context */
+	vgt_rendering_save_mmio(prev);
+
+	/* STEP-2: HW render context switch */
+	for (i=0; i < pdev->max_engines; i++) {
+		struct vgt_rsvd_ring *ring = &pdev->ring_buffer[i];
+
+		if (!ring->need_switch) {
+			vgt_warn("vgt_ha_restore_checkpoint(): ring[%d] !need_switch !\n", i);
+			continue;
+		}
+
+		/* STEP-2a: stop the ring */
+		if (!stop_ring(pdev, i)) {
+			vgt_err("Fail to stop ring (1st)\n");
+			goto err;
+		}
+
+		/* STEP-2b: save current ring buffer structure */
+		vgt_save_ringbuffer(prev, i);
+
+		if (ring->stateless)
+			continue;
+
+		/* STEP-2c: switch to vGT ring buffer */
+		if (!vgt_setup_rsvd_ring(ring)) {
+			vgt_err("Fail to setup rsvd ring\n");
+			goto err;
+		}
+
+		start_ring(pdev, i);
+
+		/* STEP-2d: save HW render context for prev */
+		if (!vgt_save_hw_context(i, prev)) {
+			vgt_err("vgt_ha_restore_checkpoint(): Fail to save context\n");
+			goto err;
+		}
+
+		if (render_engine_reset && !vgt_reset_engine(pdev, i)) {
+			vgt_err("Fail to reset engine\n");
+			goto err;
+		}
+
+		/* STEP-2e: restore HW render context for next */
+		if (!vgt_restore_hw_context(i, next)) {
+			vgt_err("Fail to restore context\n");
+			goto err;
+		}
+
+		/* STEP-2f: idle and stop ring at the end of HW switch */
+		if (!idle_render_engine(pdev, i)) {
+			vgt_err("fail to idle ring-%d after ctx restore\n", i);
+			goto err;
+		}
+
+		if (!stop_ring(pdev, i)) {
+			vgt_err("Fail to stop ring (2nd)\n");
+			goto err;
+		}
+	}
+
+	/* STEP-3: manually restore render context */
+	vgt_rendering_restore_mmio(next);
+
+	/* STEP-4: restore ring buffer structure */
+	for (i = 0; i < pdev->max_engines; i++)
+		vgt_restore_ringbuffer(next, i);
+
+	/* STEP-5: switch PPGTT */
+	current_render_owner(pdev) = next;
+	/* ppgtt switch must be done after render owner switch */
+	if (pdev->enable_ppgtt && next->ppgtt_initialized)
+		vgt_ppgtt_switch(next);
+
+	/* STEP-6: ctx switch ends, and then kicks of new tail */
+	vgt_kick_ringbuffers(next);
+
+	/* NOTE: do NOT access MMIO after this PUT hypercall! */
+	if (forcewake_got)
+		BUG_ON(hcall_vgt_ctrl(VGT_CTRL_FORCEWAKE_PUT) != 0);
+
+	/* request to check IRQ when ctx switch happens */
+	if (prev->force_removal ||
+		bitmap_empty(prev->enabled_rings, MAX_ENGINES)) {
+		printk("Disable render for vgt(%d) from kthread\n",
+			prev->vgt_id);
+		vgt_disable_render(prev);
+		wmb();
+		if (prev->force_removal) {
+			prev->force_removal = 0;
+			if (waitqueue_active(&pdev->destroy_wq))
+				wake_up(&pdev->destroy_wq);
+		}
+		/* no need to check if prev is to be destroyed */
+	}
+
+	next->stat.schedule_in_time = vgt_get_cycles();
+
+	vgt_sched_update_next(next);
+
+	t2 = vgt_get_cycles();
+	context_switch_cost += (t2-t1);
+//out:
+	vgt_unlock_dev(pdev, cpu);
+	return 0;
+err:
+	dump_regs_on_err(pdev);
+	/* TODO: any cleanup for context switch errors? */
+	vgt_err("Ring-%d: (%lldth checks %lldth switch<%d->%d>)\n",
+			i, vgt_ctx_check(pdev), vgt_ctx_switch(pdev),
+			prev->vgt_id, next->vgt_id);
+	vgt_err("FAIL on ring-%d\n", i);
+	vgt_err("cur(%d): head(%x), tail(%x), start(%x)\n",
+			current_render_owner(pdev)->vgt_id,
+			current_render_owner(pdev)->rb[i].sring.head,
+			current_render_owner(pdev)->rb[i].sring.tail,
+			current_render_owner(pdev)->rb[i].sring.start);
+	vgt_err("dom0(%d): head(%x), tail(%x), start(%x)\n",
+			vgt_dom0->vgt_id,
+			vgt_dom0->rb[i].sring.head,
+			vgt_dom0->rb[i].sring.tail,
+			vgt_dom0->rb[i].sring.start);
+	show_ring_debug(pdev, i);
+	show_ringbuffer(pdev, i, 16 * sizeof(vgt_reg_t));
+	if (!enable_reset)
+		/* crash system now, to avoid causing more confusing errors */
+		ASSERT(0);
+
+	/*
+	 * put this after the ASSERT(). When ASSERT() tries to dump more
+	 * CPU/GPU states: we want to hold the lock to prevent other
+	 * vcpus' vGT related codes at this time.
+	 */
+
+	if (forcewake_got)
+		BUG_ON(hcall_vgt_ctrl(VGT_CTRL_FORCEWAKE_PUT) != 0);
+
+	vgt_unlock_dev(pdev, cpu);
+
+	return -1;
+#if 0
+	for (i = 0; i < pdev->max_engines; i++) {
+		vgt_state_ring_t *rb = &vgt->rb[i];
+		vgt_state_ring_t *rb_cp = &vgt->rb_cp[i];
+
+		/*printk("XXH: ring %d now: head %x\n", i, VGT_READ_HEAD(pdev, i));
+		print_ring_state(rb);
+		printk("XXH: ring %d saved:\n", i);
+		print_ring_state(rb_cp);*/
+
+		memcpy(rb, rb_cp, sizeof(vgt_state_ring_t));
+	}
+	vgt_ha_restore_gtt_gm(vgt);
+	vgt_ha_rendering_restore_mmio(vgt);
+	for (i=0; i < pdev->max_engines; i++) {
+		printk("XXH: ring %d now: head %x\n", i, VGT_READ_HEAD(pdev, i));
+	}
+	vgt->ha.restore_request = 0;
+	t1 = vgt_get_cycles();
+	cost = t1 - t0;
+	printk("XXH ha restore cost %lld\n", cost);
+	return false;
+#endif
 }
 
 /*
@@ -1832,7 +2619,7 @@ int vgt_ha_checkpoint_thread(void *priv)
 	//u64 wait_idle;
 	//cycles_t t0, t1;
 	int ret;
-	int cpu;
+	//int cpu;
 	int count = 0;
 
 	printk("vGT: start ha_checkpoint kthread for dev (%x, %x)\n", pdev->bus, pdev->devfn);
@@ -1870,15 +2657,16 @@ int vgt_ha_checkpoint_thread(void *priv)
 					(void *)&vgt->ha.request)) {
 			/* create a single checkpoint */
 			/*
-			 * emulate a ctx switch here, suppose prev->next, vgt should be prev.
+			 * trigger a ctx switch here, suppose prev->next, vgt should be prev.
 			 * we take a copy of prev's saved contents in ha struct,
 			 * if target vgt is current_render_owner, we force a (fake?) ctx switch.
 			 */
 			if (current_render_owner(pdev) == vgt) {
-				vgt_lock_dev(pdev, cpu);
+				// lock inside
+				//vgt_lock_dev(pdev, cpu);
 				if (vgt_ha_create_checkpoint(vgt) != 0)
 					vgt_err("vgt_ha_create_checkpoint failed!\n");
-				vgt_unlock_dev(pdev, cpu);
+				//vgt_unlock_dev(pdev, cpu);
 
 			}
 			else {
@@ -1886,11 +2674,38 @@ int vgt_ha_checkpoint_thread(void *priv)
 				pdev->next_sched_vgt = vgt;
 				vgt_raise_request(pdev, VGT_REQUEST_FORCE_CTX_SWITCH);
 
-#if 0
 				/* Z3: cannot set here, or for single cpu, this kthread will continue busy looping and won't release the cpu, leading to hang-like case */
 				/* pending the ha request to the next round (until current render owner == vgt)*/
+#if 0
 				set_bit(VGT_HA_REQ_CREATE, (void *)&vgt->ha.request);
 #endif
+			}
+		}
+		if (test_and_clear_bit(VGT_HA_REQ_RESTORE,
+					(void *)&vgt->ha.request)) {
+			/* restore from a single checkpoint saved in vgt->ha */
+			/*
+			 * trigger a ctx switch here, suppose prev->next, vgt should be next. (thus we always take dom0 as prev at current
+			 * we take a copy of prev's saved contents in ha struct,
+			 * if target vgt is current_render_owner, we force a (fake?) ctx switch.
+			 */
+			if (current_render_owner(pdev) == vgt_dom0) {
+				// lock inside
+				//vgt_lock_dev(pdev, cpu);
+				if (vgt_ha_restore_checkpoint(vgt) != 0)
+					vgt_err("vgt_ha_restore_checkpoint failed!\n");
+				//vgt_unlock_dev(pdev, cpu);
+				vgt_info("Z3: Restore finish.. vm-%d \n", current_render_owner(pdev)->vm_id); 
+
+			}
+			else {
+				vgt_warn("vgt_ha_create_checkpoint failed: request vgt(%d) is not the onwer(%d)!\n", vgt->vm_id, current_render_owner(pdev)->vm_id);
+				pdev->next_sched_vgt = vgt_dom0;
+				/* FIXME Z3: tell vgt_thread which vm is the restore target after the ctx switch */
+				pdev->next_ha_restore_vgt = vgt;
+				pdev->next_sched_vgt = vgt_dom0;
+				vgt_raise_request(pdev, VGT_REQUEST_FORCE_CTX_SWITCH);
+
 			}
 		}
 	}
@@ -1959,6 +2774,7 @@ bool vgt_do_render_context_switch(struct pgt_device *pdev, uint32_t force)
 	cycles_t t0, t1, t2;
 	int cpu;
 	bool forcewake_got = false;
+	static int zcnt = 0, outzcnt = 0;
 
 	if (!(vgt_ctx_check(pdev) % threshold)) {
 		vgt_dbg(VGT_DBG_RENDER, "vGT: %lldth checks, %lld switches\n",
@@ -1977,11 +2793,18 @@ bool vgt_do_render_context_switch(struct pgt_device *pdev, uint32_t force)
 	 */
 	vgt_lock_dev(pdev, cpu);
 
+	zcnt++;
+	if (zcnt % 300 == 0) {
+		printk("Z3: ctx switch total:%d real:%d\n", zcnt, zcnt-outzcnt);
+	}
+
 	if (!force) {
 		vgt_schedule(pdev);
 
-		if (!ctx_switch_requested(pdev))
+		if (!ctx_switch_requested(pdev)) {
+			outzcnt++;
 			goto out;
+		}
 
 		ASSERT(spin_is_locked(&pdev->lock));
 		ASSERT(forcewake_count == 0 || forcewake_count == 1);
@@ -2021,7 +2844,6 @@ bool vgt_do_render_context_switch(struct pgt_device *pdev, uint32_t force)
 
 	vgt_dbg(VGT_DBG_RENDER, "vGT: next vgt (%d)\n", next->vgt_id);
 	
-
 	/* variable exported by debugfs */
 	context_switch_num ++;
 	t1 = vgt_get_cycles();

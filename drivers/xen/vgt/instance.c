@@ -334,7 +334,7 @@ int create_vgt_instance(struct pgt_device *pdev, struct vgt_device **ptr_vgt, vg
 
 	if (vgt->vm_id != 0) {
 		vgt->ha.saved_vgtt = vzalloc(vgt->vgtt_sz);
-		/* ZD: XenGT must enable "ballooning feature", which indicates vGT driver
+		/* Z3: XenGT must enable "ballooning feature", which indicates vGT driver
 		 *	shares the same view of domU's GM address space. We investigate that
 		 *	"ballooning" itself is not featured, thus we try to copy valid domU's
 		 *	GM region according to domU's configuration file only.

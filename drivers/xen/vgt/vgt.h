@@ -955,6 +955,8 @@ struct pgt_device {
 	struct vgt_device *owner[VGT_OT_MAX];	/* owner list of different engines */
 	struct vgt_device *foreground_vm;		/* current visible domain on display. */
 	struct vgt_device *next_sched_vgt;
+	/* Z3: HA_REQ_RESTORE triggered vgt, after a FORCE_CTX_SWITCH(->dom0) occur */
+	struct vgt_device *next_ha_restore_vgt;
 	struct vgt_device *next_foreground_vm;
 	struct list_head rendering_runq_head; /* reuse this for context scheduler */
 	struct list_head rendering_idleq_head; /* reuse this for context scheduler */

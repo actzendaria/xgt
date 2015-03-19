@@ -334,17 +334,30 @@ static int vgt_thread(void *priv)
 					ASSERT(0);
 				}
 			}
-			/* Z3: a VGT_HA_REQ_CREATE causes a force ctx swtich and goes to here*/
+			/* Z3: a VGT_HA_REQ_CREATE/VGT_HA_REQ_RESTORE causes a force ctx swtich and goes to here*/
 			else {
-				/* add a VGT_HA_REQ_CREATE here */
+				/*
+				 * if target is domU, add a VGT_HA_REQ_CREATE here
+				 * elif target is dom0, add a VGT_HA_REQ_RESTORE here
+				 */
 				if (current_render_owner(pdev) != vgt_tmp) {
 					vgt_warn("Z3: unexpected switched render owner to vm-%d, ha request target is vm-%d!\n",
 							current_render_owner(pdev)->vm_id, vgt_tmp->vm_id);
 				}
-				else {
+				/* FIXME Z3: vgt_tmp == ha_create_request_target */
+				else if (current_render_owner(pdev) != vgt_dom0) {
 					vgt_info("Z3: switched render owner to vm-%d, ask for a VGT_HA_REQ_CREATE request again.\n",
 							current_render_owner(pdev)->vm_id);
 					vgt_raise_ha_request(current_render_owner(pdev), VGT_HA_REQ_CREATE);
+				}
+				else if (pdev->next_ha_restore_vgt) {
+					vgt_info("Z3: switched render owner to vm-%d, ask for a VGT_HA_REQ_RESTORE request (vm-%d) again.\n",
+							current_render_owner(pdev)->vm_id, pdev->next_ha_restore_vgt->vm_id);
+					vgt_raise_ha_request(pdev->next_ha_restore_vgt, VGT_HA_REQ_RESTORE);
+					pdev->next_ha_restore_vgt = NULL;
+				}
+				else {
+					vgt_info("Z3: FORCE_CTX_SWITCH but HA restore target is NULL!\n");
 				}
 			}
 			vgt_tmp = NULL;
